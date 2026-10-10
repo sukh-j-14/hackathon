@@ -76,6 +76,75 @@ test(
         ),
       );
       assert(next.answer.includes('Page 2'));
+      // A new ranking request resets an unrelated category and uses the explicitly named store,
+      // even if the model misroutes it and copies earlier filters. The store typo is intentional.
+      output = {
+        intent: 'PRODUCTS',
+        locationId: 'store-mumbai',
+        category: 'Audio',
+        search: 'cheapest product',
+        maxPrice: 1000,
+        sort: 'name',
+      };
+      const cheapest = await ask('cheapest product in indranagaer store', [
+        ...history,
+        { role: 'assistant', content: electronics.answer },
+      ]);
+      assert.equal(cheapest.mode, 'CATALOGUE');
+      assert.equal(cheapest.storeId, 'store-bengaluru');
+      const cheapestDb = await db.product.findFirstOrThrow({
+        where: {
+          active: true,
+          inventory: { some: { locationId: 'store-bengaluru', quantity: { gt: 0 } } },
+        },
+        orderBy: [{ price: 'asc' }, { id: 'asc' }],
+      });
+      assert.equal(cheapest.products![0].productId, cheapestDb.id);
+      assert(cheapest.answer.includes('Category: All products'));
+      assert(cheapest.answer.includes('Sort: price-asc'));
+      output = { intent: 'PRODUCTS', locationId: null, category: null, sort: 'name' };
+      const cheapestElectronics = await ask('electronics', [
+        { role: 'user', content: 'cheapest product in indranagaer store' },
+        { role: 'assistant', content: cheapest.answer },
+      ]);
+      assert.equal(cheapestElectronics.storeId, 'store-bengaluru');
+      assert(cheapestElectronics.answer.includes('Sort: price-asc'));
+      assert(
+        cheapestElectronics.products!.every((p) =>
+          ['Audio', 'Computers', 'Mobiles', 'Wearables'].includes(p.product.category),
+        ),
+      );
+      const recoveredCheapest = await ask('electronics', [
+        { role: 'user', content: 'cheapest product in indranagaer store' },
+        {
+          role: 'assistant',
+          content:
+            'cheapest product in Indranagar store. What category or type of product are you looking for in the Indranagar store?',
+        },
+      ]);
+      assert.equal(recoveredCheapest.mode, 'CATALOGUE');
+      assert.equal(recoveredCheapest.storeId, 'store-bengaluru');
+      assert(recoveredCheapest.answer.includes('Sort: price-asc'));
+      output = { intent: 'PRODUCTS', category: 'Computers', search: 'laptop', sort: 'name' };
+      const laptops = await ask('least expensive laptop in Indiranagar');
+      assert(laptops.products!.length > 0);
+      assert(laptops.products!.every((p) => /laptop/i.test(p.product.name)));
+      assert(laptops.answer.includes('Sort: price-asc'));
+      output = { intent: 'PRODUCTS', category: 'Electronics', search: null, sort: 'name' };
+      const costliest = await ask('most expensive electronics in Bandra');
+      assert(
+        costliest.products!.every(
+          (p, i, all) => i === 0 || Number(p.product.price) <= Number(all[i - 1].product.price),
+        ),
+      );
+      assert(costliest.answer.includes('Sort: price-desc'));
+      const rated = await ask('top rated electronics in Bandra');
+      assert(
+        rated.products!.every(
+          (p, i, all) => i === 0 || Number(p.product.rating) <= Number(all[i - 1].product.rating),
+        ),
+      );
+      assert(rated.answer.includes('Sort: rating'));
       const sorted = await listChatProducts(actor, {
         storeId: 'store-mumbai',
         category: 'Computers',

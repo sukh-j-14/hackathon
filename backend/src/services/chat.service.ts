@@ -8,7 +8,7 @@ import { recommend } from './assistant.service.js';
 import { answer } from './knowledge.service.js';
 import { approvedActions } from './actions.service.js';
 import type { ChatAction } from './chat-actions.service.js';
-import { listChatProducts } from './chat-catalogue.service.js';
+import { catalogueSort, listChatProducts, namedCatalogueStore } from './chat-catalogue.service.js';
 
 const inputSchema = z
   .object({
@@ -102,7 +102,7 @@ export async function chat(actor: Actor, raw: unknown) {
   const intent = intentSchema.parse(
     await generateJson(
       `Route a RetailPulse retail conversation to ONE server capability. Return JSON {intent,locationId,targetId,search,status,quantity,body,reason,period,page,category,maxPrice,sort}.
-CATALOGUE is for listing/browsing available products (including "list all the available products in Bandra store"), category browsing, and their filter/sort/page follow-ups. Such requests are already clear: never ask which product type before listing all products. A short category answer such as "electronics" after a catalogue request stays CATALOGUE. category must be a supplied category, Electronics (Audio/Computers/Mobiles/Wearables), or null for all. search is null for category-only browsing, not "electronics". sort is name/price-asc/price-desc/rating, default name. Use maxPrice only for explicit budget filters. Preserve the previous catalogue store, category, budget, search and sort for follow-ups or next page; reset page to 1 when a filter changes. Latest changes override earlier filters. Preserve a store named earlier in product conversations until the user changes it; do not silently switch to the page's selected store.
+CATALOGUE is for listing/browsing available products (including "list all the available products in Bandra store"), category browsing, objective ranking (cheapest/least expensive/most expensive/top-rated), and their filter/sort/page follow-ups. "Cheapest product in Indiranagar" means all in-stock products sorted price-asc; no category or budget is required. "Cheapest laptop" means search laptop, price-asc. "Most expensive electronics" means category Electronics, search null, price-desc. These are database queries, not subjective recommendations: never ask for a type or budget before returning results. Correct small store-name spelling errors using the supplied locations. A short category answer such as "electronics" after a catalogue or cheapest-product request stays CATALOGUE and preserves the store and price sort. category must be a supplied category, Electronics (Audio/Computers/Mobiles/Wearables), or null for all. search is null for generic product/category-only browsing, never "product", "cheapest" or "electronics". sort is name/price-asc/price-desc/rating, default name. Use maxPrice only for explicit budget filters. Preserve the previous catalogue store, category, budget, search and sort for follow-ups or next page; reset page to 1 when a filter changes. A new generic-product request at a named store resets earlier category, budget and search filters. Latest changes override earlier filters. Preserve a store named earlier in product conversations until the user changes it; do not silently switch to the page's selected store.
 Intent: PRODUCTS for finding/comparing/recommending products or product-spec/budget/use-case follow-ups; POLICY for policy/returns/warranty/delivery/membership questions; INVENTORY or LOW_STOCK for staff stock queries; ORDERS or ORDER_SUMMARY for actual order records/counts/status totals; TICKETS for ticket lists/details; REPLENISHMENTS for existing stock requests and their approvals/receipts; RESTOCK for requesting new stock; REPLY/RESOLVE/ESCALATE for ticket changes; CANCEL_ORDER for cancellation; CHECKOUT for buying/placing an order; POLICIES/ACCOUNTS for administrator management; HELP for greetings or unsupported tasks.
 Use LOCATIONS when asking which stores/locations the signed-in manager manages, or to list available stores. CHECKOUT also includes adding a recommended product to cart: copy its exact product ID from history into targetId, never an order ID. When no product is selected, use null targetId to open existing-cart checkout.
 Use relevant history to understand follow-ups; latest request overrides earlier filters. A new topic must not inherit unrelated filters. Never route product discovery to POLICY. Manager/admin can also find products. Customer order/ticket queries always mean their own data. No role escalation is possible. Never claim an action has executed.
@@ -117,46 +117,57 @@ Resolve locationId only from supplied locations when explicitly requested; other
     ),
   );
   const selectedLocation = intent.locationId || input.storeId;
+  const productTerms =
+    /\b(?:products?|items?|electronics|laptops?|phones?|smartphones?|headphones?|speakers?|computers?|wearables?|mobiles?|keyboards?|refrigerators?|smartwatches?|fitness bands?)\b/i;
   // A direct request to list products must not be diverted into recommendation clarification.
   const explicitListing =
-    /\b(?:list|show|display|browse)\s+(?:(?:me|all|the|available|in[- ]stock)\s+)*products\b/i.test(
-      input.question,
-    );
+    /\b(?:list|show|display|browse)\b/i.test(input.question) &&
+    productTerms.test(input.question) &&
+    !/\b(?:orders?|tickets?|replenishments?|restock|policy|policies)\b/i.test(input.question);
   const categoryReply = [...categories.map((p) => p.category), 'Electronics'].find(
     (c) => c.toLowerCase() === input.question.trim().toLowerCase(),
   );
   const lastAssistant =
     [...input.history].reverse().find((m) => m.role === 'assistant')?.content || '';
   const priorListing = lastAssistant.startsWith('Available products at ');
-  const oldListingClarification = /\b(?:list|show)\b.*\bproducts\b/i.test(lastAssistant);
+  const explicitSort = catalogueSort(input.question);
+  const rankedProduct =
+    !!explicitSort &&
+    productTerms.test(input.question) &&
+    !/\b(?:orders?|tickets?|replenishments?|restock|policy|policies)\b/i.test(input.question);
+  const oldListingClarification =
+    /\b(?:list|show)\b.*\bproducts\b/i.test(lastAssistant) ||
+    (!!catalogueSort(lastAssistant) && productTerms.test(lastAssistant));
   if (
     intent.intent === 'CATALOGUE' ||
     (explicitListing && ['PRODUCTS', 'HELP'].includes(intent.intent)) ||
+    (rankedProduct && ['PRODUCTS', 'HELP', 'CATALOGUE'].includes(intent.intent)) ||
+    (explicitSort && priorListing && ['PRODUCTS', 'HELP'].includes(intent.intent)) ||
     (categoryReply && (priorListing || oldListingClarification))
   ) {
     // Conversation filters are context, never authorization. Recover our bounded listing metadata
     // server-side so a model's null/default fields cannot silently switch stores or repeat questions.
-    const namedStore =
-      locations.find((l) => input.question.toLowerCase().includes(l.name.toLowerCase())) ||
-      locations.find(
-        (l) =>
-          !l.warehouse &&
-          !/\bwarehouse\b/i.test(input.question) &&
-          input.question.toLowerCase().includes(l.city.toLowerCase()),
-      );
+    const namedStore = namedCatalogueStore(input.question, locations);
     const previousStore =
       priorListing || oldListingClarification
-        ? locations.find((l) => lastAssistant.toLowerCase().includes(l.name.toLowerCase()))
+        ? namedCatalogueStore(lastAssistant, locations)
         : undefined;
     const previousCategory = priorListing
       ? lastAssistant.match(/Category: (.*?)\. \d+ matching products/)?.[1]
       : undefined;
     const previousPage = Number(lastAssistant.match(/Page (\d+) of/)?.[1] || 1);
     const previousBudget = lastAssistant.match(/Budget: up to ₹([\d.]+)\./)?.[1];
-    const previousSort = lastAssistant.match(/Sort: (name|price-asc|price-desc|rating)\./)?.[1] as
-      typeof intent.sort | undefined;
+    const previousSort = (lastAssistant.match(/Sort: (name|price-asc|price-desc|rating)\./)?.[1] ||
+      catalogueSort(lastAssistant)) as typeof intent.sort | undefined;
     const previousSearch = lastAssistant.match(/Search: (.*?)\. Sort:/)?.[1];
-    const followUp = priorListing && !explicitListing;
+    const newBroadRanking =
+      rankedProduct &&
+      /\b(?:products?|items?)\b/i.test(input.question) &&
+      ![...categories.map((p) => p.category), 'Electronics'].some((c) =>
+        new RegExp(`\\b${c}\\b`, 'i').test(input.question),
+      );
+    const followUp =
+      (priorListing || oldListingClarification) && !explicitListing && !newBroadRanking;
     const clearCategory = /\b(?:all products|all categories|remove.*category)\b/i.test(
       input.question,
     );
@@ -172,24 +183,29 @@ Resolve locationId only from supplied locations when explicitly requested; other
     const previous = /\bprevious page\b/i.test(input.question);
     return listChatProducts(actor, {
       storeId: namedStore?.id || previousStore?.id || selectedLocation,
-      category: clearCategory
-        ? null
-        : categoryReply ||
-          intent.category ||
-          (followUp && previousCategory !== 'All products'
-            ? previousCategory?.startsWith('Electronics')
-              ? 'Electronics'
-              : previousCategory || null
-            : null),
-      search: categoryReply
-        ? null
-        : explicitListing
-          ? intent.search
-          : intent.search || (followUp ? previousSearch || null : null),
-      maxPrice: clearBudget
-        ? null
-        : intent.maxPrice || (followUp && previousBudget ? Number(previousBudget) : null),
-      sort: requestedSort || !followUp ? intent.sort : previousSort || intent.sort,
+      category:
+        clearCategory || newBroadRanking
+          ? null
+          : categoryReply ||
+            intent.category ||
+            (followUp && previousCategory !== 'All products'
+              ? previousCategory?.startsWith('Electronics')
+                ? 'Electronics'
+                : previousCategory || null
+              : null),
+      search:
+        categoryReply || newBroadRanking
+          ? null
+          : explicitListing
+            ? intent.search
+            : intent.search || (followUp ? previousSearch || null : null),
+      maxPrice:
+        clearBudget ||
+        (newBroadRanking && !/\b(?:under|below|budget|up to|less than)\b/i.test(input.question))
+          ? null
+          : intent.maxPrice || (followUp && previousBudget ? Number(previousBudget) : null),
+      sort:
+        explicitSort || (requestedSort || !followUp ? intent.sort : previousSort || intent.sort),
       page:
         namedStore && previousStore && namedStore.id !== previousStore.id
           ? 1

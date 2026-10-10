@@ -3,6 +3,58 @@ import { assert } from '../errors/HttpError.js';
 import { storeAccess, type Actor } from '../middleware/authorize.js';
 import type { Prisma } from '../generated/prisma/client.js';
 
+// Explicit ranking is a database sort, even when the router calls it a recommendation.
+export function catalogueSort(question: string) {
+  if (/\b(?:most expensive|costliest|highest price|high to low|price descending)\b/i.test(question))
+    return 'price-desc' as const;
+  if (/\b(?:cheapest|least expensive|lowest price|low to high|price ascending)\b/i.test(question))
+    return 'price-asc' as const;
+  if (/\b(?:top[- ]rated|highest[- ]rated|best[- ]rated|highest rating)\b/i.test(question))
+    return 'rating' as const;
+  return null;
+}
+
+// Allow a small typo in a long location name only when it identifies one unique store.
+// This resolves names, not access rights; the database capability still checks permissions.
+export function namedCatalogueStore<T extends { name: string; city: string; warehouse: boolean }>(
+  question: string,
+  locations: T[],
+) {
+  const text = question.toLowerCase();
+  const exact =
+    locations.find((l) => text.includes(l.name.toLowerCase())) ||
+    locations.find(
+      (l) => !l.warehouse && !/\bwarehouse\b/i.test(text) && text.includes(l.city.toLowerCase()),
+    );
+  if (exact) return exact;
+  const words = text.match(/[a-z]+/g) || [];
+  function distance(a: string, b: string) {
+    let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const next = [i];
+      for (let j = 1; j <= b.length; j++)
+        next[j] = Math.min(next[j - 1] + 1, row[j] + 1, row[j - 1] + Number(a[i - 1] !== b[j - 1]));
+      row = next;
+    }
+    return row[b.length];
+  }
+  const matches = locations.filter(
+    (l) =>
+      !l.warehouse &&
+      [l.name, l.city].some((label) =>
+        label
+          .toLowerCase()
+          .split(/[^a-z]+/)
+          .some(
+            (part) =>
+              part.length >= 7 &&
+              words.some((word) => word.length >= 7 && distance(word, part) <= 2),
+          ),
+      ),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 // Browsing is a database listing, not a model-selected shortlist. Every matching row is pageable.
 export async function listChatProducts(
   actor: Actor,
