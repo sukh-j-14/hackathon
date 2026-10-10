@@ -8,6 +8,7 @@ import { recommend } from './assistant.service.js';
 import { answer } from './knowledge.service.js';
 import { approvedActions } from './actions.service.js';
 import type { ChatAction } from './chat-actions.service.js';
+import { listChatProducts } from './chat-catalogue.service.js';
 
 const inputSchema = z
   .object({
@@ -26,6 +27,7 @@ const inputSchema = z
 const intentSchema = z.object({
   intent: z.enum([
     'PRODUCTS',
+    'CATALOGUE',
     'POLICY',
     'INVENTORY',
     'LOW_STOCK',
@@ -51,6 +53,12 @@ const intentSchema = z.object({
   quantity: z.number().int().min(1).max(1000).nullable().default(null),
   body: z.string().max(3000).nullable().default(null),
   reason: z.string().max(500).nullable().default(null),
+  category: z.string().max(40).nullable().default(null),
+  maxPrice: z.number().positive().nullable().default(null),
+  sort: z
+    .enum(['name', 'price-asc', 'price-desc', 'rating'])
+    .nullish()
+    .transform((value) => value || 'name'),
   // Providers sometimes return null for irrelevant paging/date filters; normalize before dispatch.
   period: z
     .enum(['ALL', 'TODAY', 'WEEK', 'MONTH'])
@@ -83,12 +91,18 @@ const action = (
 
 export async function chat(actor: Actor, raw: unknown) {
   const input = inputSchema.parse(raw);
-  const locations = await db.location.findMany({
-    select: { id: true, name: true, city: true, warehouse: true },
-  });
+  const [locations, categories] = await Promise.all([
+    db.location.findMany({ select: { id: true, name: true, city: true, warehouse: true } }),
+    db.product.findMany({
+      where: { active: true },
+      distinct: ['category'],
+      select: { category: true },
+    }),
+  ]);
   const intent = intentSchema.parse(
     await generateJson(
-      `Route a RetailPulse retail conversation to ONE server capability. Return JSON {intent,locationId,targetId,search,status,quantity,body,reason,period,page}.
+      `Route a RetailPulse retail conversation to ONE server capability. Return JSON {intent,locationId,targetId,search,status,quantity,body,reason,period,page,category,maxPrice,sort}.
+CATALOGUE is for listing/browsing available products (including "list all the available products in Bandra store"), category browsing, and their filter/sort/page follow-ups. Such requests are already clear: never ask which product type before listing all products. A short category answer such as "electronics" after a catalogue request stays CATALOGUE. category must be a supplied category, Electronics (Audio/Computers/Mobiles/Wearables), or null for all. search is null for category-only browsing, not "electronics". sort is name/price-asc/price-desc/rating, default name. Use maxPrice only for explicit budget filters. Preserve the previous catalogue store, category, budget, search and sort for follow-ups or next page; reset page to 1 when a filter changes. Latest changes override earlier filters. Preserve a store named earlier in product conversations until the user changes it; do not silently switch to the page's selected store.
 Intent: PRODUCTS for finding/comparing/recommending products or product-spec/budget/use-case follow-ups; POLICY for policy/returns/warranty/delivery/membership questions; INVENTORY or LOW_STOCK for staff stock queries; ORDERS or ORDER_SUMMARY for actual order records/counts/status totals; TICKETS for ticket lists/details; REPLENISHMENTS for existing stock requests and their approvals/receipts; RESTOCK for requesting new stock; REPLY/RESOLVE/ESCALATE for ticket changes; CANCEL_ORDER for cancellation; CHECKOUT for buying/placing an order; POLICIES/ACCOUNTS for administrator management; HELP for greetings or unsupported tasks.
 Use LOCATIONS when asking which stores/locations the signed-in manager manages, or to list available stores. CHECKOUT also includes adding a recommended product to cart: copy its exact product ID from history into targetId, never an order ID. When no product is selected, use null targetId to open existing-cart checkout.
 Use relevant history to understand follow-ups; latest request overrides earlier filters. A new topic must not inherit unrelated filters. Never route product discovery to POLICY. Manager/admin can also find products. Customer order/ticket queries always mean their own data. No role escalation is possible. Never claim an action has executed.
@@ -97,11 +111,97 @@ Resolve locationId only from supplied locations when explicitly requested; other
         ...input,
         role: actor.role,
         locations,
+        productCategories: categories.map((p) => p.category),
         today: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
       },
     ),
   );
   const selectedLocation = intent.locationId || input.storeId;
+  // A direct request to list products must not be diverted into recommendation clarification.
+  const explicitListing =
+    /\b(?:list|show|display|browse)\s+(?:(?:me|all|the|available|in[- ]stock)\s+)*products\b/i.test(
+      input.question,
+    );
+  const categoryReply = [...categories.map((p) => p.category), 'Electronics'].find(
+    (c) => c.toLowerCase() === input.question.trim().toLowerCase(),
+  );
+  const lastAssistant =
+    [...input.history].reverse().find((m) => m.role === 'assistant')?.content || '';
+  const priorListing = lastAssistant.startsWith('Available products at ');
+  const oldListingClarification = /\b(?:list|show)\b.*\bproducts\b/i.test(lastAssistant);
+  if (
+    intent.intent === 'CATALOGUE' ||
+    (explicitListing && ['PRODUCTS', 'HELP'].includes(intent.intent)) ||
+    (categoryReply && (priorListing || oldListingClarification))
+  ) {
+    // Conversation filters are context, never authorization. Recover our bounded listing metadata
+    // server-side so a model's null/default fields cannot silently switch stores or repeat questions.
+    const namedStore =
+      locations.find((l) => input.question.toLowerCase().includes(l.name.toLowerCase())) ||
+      locations.find(
+        (l) =>
+          !l.warehouse &&
+          !/\bwarehouse\b/i.test(input.question) &&
+          input.question.toLowerCase().includes(l.city.toLowerCase()),
+      );
+    const previousStore =
+      priorListing || oldListingClarification
+        ? locations.find((l) => lastAssistant.toLowerCase().includes(l.name.toLowerCase()))
+        : undefined;
+    const previousCategory = priorListing
+      ? lastAssistant.match(/Category: (.*?)\. \d+ matching products/)?.[1]
+      : undefined;
+    const previousPage = Number(lastAssistant.match(/Page (\d+) of/)?.[1] || 1);
+    const previousBudget = lastAssistant.match(/Budget: up to ₹([\d.]+)\./)?.[1];
+    const previousSort = lastAssistant.match(/Sort: (name|price-asc|price-desc|rating)\./)?.[1] as
+      typeof intent.sort | undefined;
+    const previousSearch = lastAssistant.match(/Search: (.*?)\. Sort:/)?.[1];
+    const followUp = priorListing && !explicitListing;
+    const clearCategory = /\b(?:all products|all categories|remove.*category)\b/i.test(
+      input.question,
+    );
+    const clearBudget = /\b(?:any budget|no budget|remove.*budget|any price)\b/i.test(
+      input.question,
+    );
+    const requestedSort =
+      /\b(?:sort|cheapest|expensive|rating|rated|alphabetical|ascending|descending)\b/i.test(
+        input.question,
+      );
+    const explicitPage = input.question.match(/\bpage\s+(\d+)\b/i)?.[1];
+    const nextPage = /\b(?:next page|show more)\b/i.test(input.question);
+    const previous = /\bprevious page\b/i.test(input.question);
+    return listChatProducts(actor, {
+      storeId: namedStore?.id || previousStore?.id || selectedLocation,
+      category: clearCategory
+        ? null
+        : categoryReply ||
+          intent.category ||
+          (followUp && previousCategory !== 'All products'
+            ? previousCategory?.startsWith('Electronics')
+              ? 'Electronics'
+              : previousCategory || null
+            : null),
+      search: categoryReply
+        ? null
+        : explicitListing
+          ? intent.search
+          : intent.search || (followUp ? previousSearch || null : null),
+      maxPrice: clearBudget
+        ? null
+        : intent.maxPrice || (followUp && previousBudget ? Number(previousBudget) : null),
+      sort: requestedSort || !followUp ? intent.sort : previousSort || intent.sort,
+      page:
+        namedStore && previousStore && namedStore.id !== previousStore.id
+          ? 1
+          : nextPage && followUp
+            ? Math.min(1000, previousPage + 1)
+            : previous && followUp
+              ? Math.max(1, previousPage - 1)
+              : explicitPage
+                ? Math.min(1000, Math.max(1, Number(explicitPage)))
+                : 1,
+    });
+  }
   if (intent.intent === 'LOCATIONS') {
     const visible = locations.filter((l) =>
       actor.role === 'STORE_MANAGER'
