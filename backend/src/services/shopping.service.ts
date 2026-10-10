@@ -196,6 +196,8 @@ export async function checkout(actor: Actor, inputBody: unknown, idempotencyKey:
           details: { total: q.total, simulatedPayment: true },
         },
       });
+      console.log('in terminal')
+
       return order;
     },
     { timeout: 20000 },
