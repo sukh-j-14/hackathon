@@ -12,4 +12,4 @@ Sign in as an administrator and open Knowledge. For every file select Category `
 
 Upload each file and refresh ingestion status until it is READY. Before activating the two demo-2 documents, retire their seeded demo-1 versions with the same titles to avoid conflicting active rules. Then activate the new versions. Activate the orders/support document after it is READY. Keep this README out of the upload list.
 
-The policy files are prepared here for administrator review and upload. Their creation does not activate them in the database. Recommendation and RAG improvements remain the next development step.
+Creating policy files does not publish them. Administrators explicitly upload and activate each version. The development command `npm run rag:setup -w backend` performs these steps through the admin API for these three sample files, waits for OpenAI embeddings, and retires their known seeded predecessor versions. Keep the app and worker running when using it. For existing lexical policies, admins can use Rebuild embeddings in Knowledge.

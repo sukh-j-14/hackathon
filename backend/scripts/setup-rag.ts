@@ -47,6 +47,7 @@ try {
     { file: 'returns-warranty.md', title: 'Returns and warranty policy', version: 'demo-2' },
     { file: 'orders-support.md', title: 'Orders, support and inventory policy', version: 'demo-1' },
   ];
+  const policyIds: string[] = [];
   for (const item of files) {
     let documents = await api('/knowledge/documents');
     let doc = documents.find(
@@ -104,10 +105,11 @@ try {
         body: JSON.stringify({ active: true }),
       });
     console.log(`Active with OpenAI embeddings: ${item.title}.`);
+    policyIds.push(doc.id);
   }
   const vectors = await db.$queryRaw<
     { count: number }[]
-  >`SELECT COUNT(*)::int AS count FROM "DocumentChunk" c JOIN "KnowledgeDocument" d ON d.id=c."documentId" WHERE d.active AND d.status='READY' AND c.embedding IS NOT NULL AND vector_dims(c.embedding)=1536`;
+  >`SELECT COUNT(*)::int AS count FROM "DocumentChunk" c JOIN "KnowledgeDocument" d ON d.id=c."documentId" WHERE d.id = ANY(${policyIds}::text[]) AND d.active AND d.status='READY' AND c.embedding IS NOT NULL AND vector_dims(c.embedding)=1536`;
   console.log(`${vectors[0].count} active policy vectors verified (1536 dimensions).`);
 } catch (e) {
   console.error(e instanceof Error ? e.message : 'RAG setup failed.');

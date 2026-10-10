@@ -71,9 +71,21 @@ Routes enforce role permissions. Controllers translate HTTP inputs and outputs. 
 
 ## AI configuration
 
-Set `AI_BASE_URL`, `AI_API_KEY`, and `AI_MODEL` for a provider's OpenAI-compatible chat endpoint. Provider choice can be OpenRouter, Gemini, OpenAI or Groq depending on development needs and model compatibility. Configure `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, and `EMBEDDING_MODEL` separately; the selected embedding endpoint must return 1536 dimensions. Credentials are used only by the backend.
+For OpenAI, set `OPENAI_API_KEY` in `backend/.env`. The default chat model is `gpt-4.1-mini` (override with `OPENAI_CHAT_MODEL`); embeddings use `text-embedding-3-small` with 1536 dimensions. The same key is used for both. Existing `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` and separate `EMBEDDING_*` settings remain supported and override the defaults. Credentials are used only by the backend.
 
-Without AI credentials, policy questions return matching approved source excerpts and recommendations report that configuration is required. Demo policies are clearly fictional, and initially use lexical retrieval. For vector RAG, upload documents with configured embedding credentials, wait for READY, then activate them through the admin Knowledge panel. Activation prevents overlapping active versions with the same policy scope. Configure the provider and verify model support for JSON responses before the panel demonstration.
+Policy RAG follows upload → paragraph extraction/chunking → batched OpenAI embeddings → PostgreSQL `vector(1536)` storage → cosine retrieval → grounded answer with source links. The initial Prisma migration enables the `vector` extension. Exact nearest-neighbor search is appropriate for this small MVP corpus; no separate vector database is required. Documents are filtered by role, tier, category, country, status, activation and effective dates before retrieval. Answers without supporting evidence direct the user to support; generated citation IDs are checked against retrieved passages.
+
+The chatbot keeps conversation in memory for the current signed-in page, preserves it when closed/reopened, and clears it on account changes or New chat. The backend accepts at most eight prior messages and rewrites follow-up questions for retrieval. History provides context, not policy evidence. Approved-action buttons come from a backend role allowlist and open existing review forms; mutation endpoints independently enforce role, order ownership, assigned locations and status transitions. Product recommendations remain available under Find products.
+
+Upload documents in the admin Knowledge panel, wait for READY, then activate the version. Rebuild embeddings reprocesses older lexical documents or failed uploads. Restart the API and worker after changing environment variables. Without provider keys, approved policy excerpts remain available through lexical retrieval. Activation prevents overlapping versions with the same policy scope.
+
+To load the three supplied demo policies while the app and worker are running:
+
+```powershell
+npm run rag:setup -w backend
+```
+
+This development-only command signs in through the admin API, uploads the files in `policies/`, waits for vector ingestion, retires only their known seeded demo-1 predecessors, and activates the new versions. It requires the seeded administrator's current password to match `DEMO_PASSWORD`. Do not use it for real business policies.
 
 Uploads support PDF, Markdown, text, CSV and JSON up to 5 MB. Files are private under `backend/uploads`; keep them on persistent storage when hosting. Scanned PDFs need OCR and are outside this MVP.
 
@@ -89,7 +101,7 @@ $env:RUN_DB_TESTS='true'
 npm run test:integration -w backend
 ```
 
-The database tests require seeded demo products and remove their temporary records after checking catalogue controls, JWT permissions, checkout retries, stock restoration, document ingestion/publication, tier-restricted citations, saved preferences, support escalation and store assignments. Recommendation checks use a mocked model response to verify budget/specification enforcement and reject invented product IDs. Pricing tests cover tier thresholds and fulfillment status rules. Integration tests are skipped by the default test command unless `RUN_DB_TESTS=true`.
+The database tests require seeded demo products and remove their temporary records after checking catalogue controls, JWT permissions, checkout retries, stock restoration, document ingestion/publication, tier-restricted citations, saved preferences, support escalation and store assignments. The test bootstrap clears provider keys in test processes; model responses are mocked where needed. RAG checks exercise real pgvector ranking, role/tier/date/category filtering, retired documents, citation validation and chat limits. Recommendation checks verify budget/specification enforcement and reject invented product IDs. Pricing tests cover tier thresholds and fulfillment status rules. Integration tests are skipped by the default test command unless `RUN_DB_TESTS=true`. Stop the separate ingestion worker during automated tests if you also want to prevent it from embedding temporary test uploads with its own environment.
 
 ## Scope and references
 

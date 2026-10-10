@@ -54,7 +54,14 @@ export function Chatbot({
   const [policyCategory, setPolicyCategory] = useState(category);
   const end = useRef<HTMLDivElement>(null);
   const request = useRef<AbortController | null>(null);
-  useEffect(() => () => request.current?.abort(), []);
+  const sourceRequest = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      request.current?.abort();
+      sourceRequest.current?.abort();
+    },
+    [],
+  );
   useEffect(() => {
     const controller = new AbortController();
     api<typeof actions>('/assistant/actions', { signal: controller.signal })
@@ -73,6 +80,7 @@ export function Chatbot({
     const text = question.trim();
     if (text.length < 3 || pending) return;
     setPending(true);
+    sourceRequest.current?.abort();
     setError('');
     setExcerpt(null);
     setQuestion('');
@@ -111,15 +119,22 @@ export function Chatbot({
     }
   }
   async function showSource(source: Answer['sources'][number]) {
+    sourceRequest.current?.abort();
+    const controller = new AbortController();
+    sourceRequest.current = controller;
     try {
       setError('');
-      const result = await api<{ content: string }>(`/knowledge/sources/${source.chunkId}`);
-      setExcerpt({
-        title: `${source.document} · ${source.section} · ${source.version}`,
-        content: result.content,
+      const result = await api<{ content: string }>(`/knowledge/sources/${source.chunkId}`, {
+        signal: controller.signal,
       });
+      if (!controller.signal.aborted)
+        setExcerpt({
+          title: `${source.document} · ${source.section} · ${source.version}`,
+          content: result.content,
+        });
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Source is unavailable.');
+      if (!controller.signal.aborted)
+        setError(e instanceof Error ? e.message : 'Source is unavailable.');
     }
   }
   return (
