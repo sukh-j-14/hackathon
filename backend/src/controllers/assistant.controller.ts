@@ -3,6 +3,17 @@ import { z } from 'zod';
 import { answer } from '../services/knowledge.service.js';
 import { recommend } from '../services/assistant.service.js';
 import { approvedActions } from '../services/actions.service.js';
+import { chat } from '../services/chat.service.js';
+import { prepareChatAction, confirmChatAction } from '../services/chat-actions.service.js';
+export async function conversation(req: Request, res: Response) {
+  res.json(await chat(req.actor, req.body));
+}
+export async function prepare(req: Request, res: Response) {
+  res.json(await prepareChatAction(req.actor, req.body));
+}
+export async function confirm(req: Request, res: Response) {
+  res.json(await confirmChatAction(req.actor, req.body));
+}
 export function actions(req: Request, res: Response) {
   res.json(approvedActions(req.actor));
 }

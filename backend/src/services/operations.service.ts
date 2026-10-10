@@ -28,7 +28,7 @@ export async function getInventory(actor: Actor, query: Record<string, unknown>)
   return { items, proposals };
 }
 
-export async function createReplenishment(actor: Actor, inputBody: unknown) {
+export async function createReplenishment(actor: Actor, inputBody: unknown, approvalId?: string) {
   const input = z
     .object({
       productId: z.string(),
@@ -51,6 +51,11 @@ export async function createReplenishment(actor: Actor, inputBody: unknown) {
     // One pending replenishment per product/location prevents repeated clicks from over-ordering.
     const lockKey = `${input.productId}:${input.locationId}`;
     await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${lockKey})::bigint)`;
+    if (approvalId) {
+      const completed = await tx.auditLog.findUnique({ where: { id: approvalId } });
+      if (completed)
+        return tx.replenishment.findUniqueOrThrow({ where: { id: completed.resourceId } });
+    }
     assert(
       !(await tx.replenishment.findFirst({
         where: {
@@ -66,6 +71,7 @@ export async function createReplenishment(actor: Actor, inputBody: unknown) {
     const p = await tx.replenishment.create({ data: { ...input, requestedBy: actor.id } });
     await tx.auditLog.create({
       data: {
+        ...(approvalId ? { id: approvalId } : {}),
         actorId: actor.id,
         action: 'REPLENISHMENT_PROPOSED',
         resourceId: p.id,

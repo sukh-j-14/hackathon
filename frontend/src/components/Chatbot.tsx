@@ -7,8 +7,7 @@ import {
   type FormEvent,
 } from 'react';
 import { MessageCircle, Send, RotateCcw, X } from 'lucide-react';
-import { api, type Answer } from '../api';
-import { Assistant } from './Features';
+import { api, money, type Answer, type ChatAction, type ChatPanel } from '../api';
 
 export type ChatMessage = {
   id: string;
@@ -17,41 +16,166 @@ export type ChatMessage = {
   answer?: Answer;
 };
 
+// One review control handles every server-approved mutation. Model text never executes writes.
+function ActionReview({
+  action,
+  done,
+  close,
+}: {
+  action: ChatAction;
+  done: (result: { message: string; navigation?: Answer['navigation']; storeId?: string }) => void;
+  close: () => void;
+}) {
+  const [body, setBody] = useState(action.body || '');
+  const [quantity, setQuantity] = useState(action.quantity || 1);
+  const [reason, setReason] = useState(action.reason || '');
+  const [approval, setApproval] = useState<{ token: string; summary: string } | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (pending) return;
+    setPending(true);
+    setError('');
+    try {
+      if (!approval) {
+        setApproval(
+          await api('/assistant/chat/actions/prepare', {
+            method: 'POST',
+            body: JSON.stringify({
+              kind: action.kind,
+              targetId: action.targetId,
+              ...(action.kind === 'TICKET_REPLY' ? { body } : {}),
+              ...(action.kind === 'RESTOCK' ? { quantity, reason } : {}),
+              ...(action.kind === 'ADD_CART' ? { quantity, storeId: action.storeId } : {}),
+            }),
+          }),
+        );
+      } else {
+        const result = await api<{
+          message: string;
+          navigation?: Answer['navigation'];
+          storeId?: string;
+        }>('/assistant/chat/actions/confirm', {
+          method: 'POST',
+          body: JSON.stringify({ token: approval.token }),
+        });
+        done(result);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Action failed. Please retry.');
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <form
+      className="chat-review stack"
+      aria-label="Review approved action"
+      onSubmit={(e) => void submit(e)}
+    >
+      <strong>{action.label}</strong>
+      {!approval && action.kind === 'TICKET_REPLY' && (
+        <label>
+          Customer reply
+          <textarea
+            required
+            minLength={3}
+            maxLength={3000}
+            rows={3}
+            value={body}
+            disabled={pending}
+            onChange={(e) => setBody(e.target.value)}
+          />
+        </label>
+      )}
+      {!approval && action.kind === 'RESTOCK' && (
+        <>
+          <label>
+            Units to replenish
+            <input
+              type="number"
+              required
+              min={1}
+              max={1000}
+              step={1}
+              value={quantity}
+              disabled={pending}
+              onChange={(e) => setQuantity(Number(e.target.value))}
+            />
+          </label>
+          <label>
+            Reason
+            <textarea
+              required
+              minLength={5}
+              maxLength={500}
+              value={reason}
+              disabled={pending}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </label>
+        </>
+      )}
+      {!approval && action.kind === 'ADD_CART' && (
+        <label>
+          Cart quantity
+          <input
+            type="number"
+            required
+            min={1}
+            max={99}
+            step={1}
+            value={quantity}
+            disabled={pending}
+            onChange={(e) => setQuantity(Number(e.target.value))}
+          />
+        </label>
+      )}
+      {approval && <p>{approval.summary}</p>}
+      {error && (
+        <p role="alert" className="chat-error">
+          {error}
+        </p>
+      )}
+      <div className="inline-actions">
+        <button type="submit" className="button dark" disabled={pending}>
+          {pending ? 'Please wait…' : approval ? 'Confirm action' : 'Review action'}
+        </button>
+        {approval && (
+          <button type="button" disabled={pending} onClick={() => setApproval(null)}>
+            Edit
+          </button>
+        )}
+        <button type="button" disabled={pending} onClick={close}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export function Chatbot({
   messages,
   setMessages,
   storeId,
-  category,
   customer,
-  support,
-  run,
-  busy,
   openAction,
+  openProduct,
 }: {
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   storeId: string;
-  category: string;
   customer: boolean;
-  support: () => void;
-  run: (task: () => Promise<void>) => Promise<void>;
-  busy: boolean;
-  openAction: (panel: 'orders' | 'support' | 'operations' | 'knowledge' | 'admin') => void;
+  openAction: (panel: ChatPanel, storeId?: string) => void;
+  openProduct: (id: string, storeId?: string) => void;
 }) {
-  const [actions, setActions] = useState<
-    {
-      id: string;
-      label: string;
-      description: string;
-      panel: 'orders' | 'support' | 'operations' | 'knowledge' | 'admin';
-    }[]
-  >([]);
-  const [mode, setMode] = useState('policy');
   const [question, setQuestion] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [excerpt, setExcerpt] = useState<{ title: string; content: string } | null>(null);
-  const [policyCategory, setPolicyCategory] = useState(category);
+  const [review, setReview] = useState<ChatAction | null>(null);
+  const [completed, setCompleted] = useState<string[]>([]);
   const end = useRef<HTMLDivElement>(null);
   const request = useRef<AbortController | null>(null);
   const sourceRequest = useRef<AbortController | null>(null);
@@ -63,45 +187,35 @@ export function Chatbot({
     [],
   );
   useEffect(() => {
-    const controller = new AbortController();
-    api<typeof actions>('/assistant/actions', { signal: controller.signal })
-      .then(setActions)
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(e.message);
-      });
-    return () => controller.abort();
-  }, []);
-  useEffect(() => {
     end.current?.scrollIntoView({ block: 'nearest' });
   }, [messages, pending]);
 
   async function send(e: FormEvent) {
     e.preventDefault();
     const text = question.trim();
-    if (text.length < 3 || pending) return;
+    if (!text || pending || review) return;
     setPending(true);
-    sourceRequest.current?.abort();
     setError('');
     setExcerpt(null);
     setQuestion('');
     const controller = new AbortController();
     request.current = controller;
-    // Keep conversation in this signed-in page only. The server bounds and validates context again.
-    const history = messages
-      .slice(-8)
-      .map(({ role, content }) => ({ role, content: content.slice(0, 4000) }));
+    const history = messages.slice(-8).map(({ role, content, answer }) => ({
+      role,
+      // IDs and names support natural follow-ups; the server checks access to every referenced record.
+      content:
+        `${content}${answer?.records?.length ? '\nRecords: ' + answer.records.map((r) => `${r.id}: ${r.title}`).join('; ') : ''}${answer?.products?.length ? '\nProducts: ' + answer.products.map((p) => `${p.productId}: ${p.product.name}`).join('; ') : ''}`.slice(
+          0,
+          4000,
+        ),
+    }));
     const id = crypto.randomUUID();
     setMessages((previous) => [...previous, { id, role: 'user', content: text }]);
     try {
-      const answer = await api<Answer>('/assistant/ask', {
+      const answer = await api<Answer>('/assistant/chat', {
         method: 'POST',
         signal: controller.signal,
-        body: JSON.stringify({
-          question: text,
-          history,
-          category: policyCategory || undefined,
-          documentType: 'POLICY',
-        }),
+        body: JSON.stringify({ question: text, history, storeId }),
       });
       if (!controller.signal.aborted)
         setMessages((previous) => [
@@ -110,9 +224,9 @@ export function Chatbot({
         ]);
     } catch (e) {
       if (!controller.signal.aborted) {
-        setMessages((previous) => previous.filter((message) => message.id !== id));
+        setMessages((previous) => previous.filter((m) => m.id !== id));
         setQuestion(text);
-        setError(e instanceof Error ? e.message : 'Could not send your message. Please retry.');
+        setError(e instanceof Error ? e.message : 'Could not send. Please retry.');
       }
     } finally {
       if (!controller.signal.aborted) setPending(false);
@@ -134,195 +248,213 @@ export function Chatbot({
         });
     } catch (e) {
       if (!controller.signal.aborted)
-        setError(e instanceof Error ? e.message : 'Source is unavailable.');
+        setError(e instanceof Error ? e.message : 'Source unavailable.');
     }
   }
   return (
     <div className="stack chatbot">
-      <div className="chat-actions" aria-label="Approved actions">
-        <small>Approved actions · changes are reviewed in their forms</small>
-        <div className="inline-actions">
-          {actions.map((action) => (
-            <button
-              disabled={pending}
-              key={action.id}
-              title={action.description}
-              onClick={() => openAction(action.panel)}
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="category-tabs" aria-label="Chatbot tools">
+      <div className="chat-toolbar">
+        <small>Search, ask and review actions in one conversation</small>
         <button
-          disabled={pending}
-          className={mode === 'policy' ? 'selected' : ''}
-          onClick={() => setMode('policy')}
+          className="text-button"
+          disabled={pending || !!review || !messages.length}
+          onClick={() => {
+            setMessages([]);
+            setExcerpt(null);
+            setError('');
+          }}
         >
-          Policy chat
+          <RotateCcw size={14} /> New chat
         </button>
-        {customer && (
-          <button
-            disabled={pending}
-            className={mode === 'products' ? 'selected' : ''}
-            onClick={() => setMode('products')}
-          >
-            Find products
-          </button>
-        )}
       </div>
-      {mode === 'products' ? (
-        <Assistant
-          productsOnly
-          storeId={storeId}
-          category={category}
-          customer={customer}
-          run={run}
-          busy={busy}
-        />
-      ) : (
-        <>
-          <div className="chat-toolbar">
-            <label>
-              Policy category
-              <select
-                disabled={pending}
-                value={policyCategory}
-                onChange={(e) => {
-                  setPolicyCategory(e.target.value);
-                  setMessages([]);
-                  setExcerpt(null);
-                }}
-              >
-                <option value="">All categories</option>
-                {['Audio', 'Computers', 'Wearables', 'Mobiles', 'Home'].map((c) => (
-                  <option key={c}>{c}</option>
-                ))}
-              </select>
-            </label>
-            <button
-              className="text-button"
-              disabled={pending || !messages.length}
-              onClick={() => {
-                setMessages([]);
-                setExcerpt(null);
-                setError('');
-              }}
-            >
-              <RotateCcw size={14} /> New chat
-            </button>
+      <div
+        className="chat-transcript"
+        role="log"
+        aria-label="RetailPulse conversation"
+        aria-live="polite"
+        aria-relevant="additions text"
+      >
+        {!messages.length && (
+          <div className="chat-welcome">
+            <MessageCircle size={28} />
+            <h3>How can I help?</h3>
+            <p>
+              {customer
+                ? 'Find the right products, ask about policies, track orders or review checkout and cancellations.'
+                : 'Find products, check orders and inventory, or handle tickets and replenishment with reviewed actions.'}
+            </p>
+            {(customer
+              ? [
+                  'Find me a laptop with 32 GB RAM',
+                  'What are my delivery charges?',
+                  'Show my orders',
+                  'Show my support tickets',
+                ]
+              : [
+                  'Find me a laptop with 32 GB RAM',
+                  'Show low stock items',
+                  'How many total orders are there?',
+                  'Show open tickets',
+                  'Show replenishment requests',
+                ]
+            ).map((text) => (
+              <button key={text} onClick={() => setQuestion(text)}>
+                {text}
+              </button>
+            ))}
           </div>
-          <div
-            className="chat-transcript"
-            role="log"
-            aria-label="Policy conversation"
-            aria-live="polite"
-            aria-relevant="additions text"
+        )}
+        {messages.map((message) => (
+          <article
+            key={message.id}
+            className={`chat-message ${message.role}`}
+            aria-label={message.role === 'user' ? 'You' : 'RetailPulse chatbot'}
           >
-            {!messages.length && (
-              <div className="chat-welcome">
-                <MessageCircle size={28} />
-                <h3>Hi, how can I help?</h3>
-                <p>
-                  Ask about delivery, membership, returns or warranty. I use approved RetailPulse
-                  policies and show the sources.
-                </p>
-                {[
-                  'What are the delivery charges for my membership?',
-                  'Can I return an opened mobile phone?',
-                  'How do I cancel an order?',
-                ].map((text) => (
-                  <button key={text} onClick={() => setQuestion(text)}>
-                    {text}
+            <small>{message.role === 'user' ? 'You' : 'RetailPulse'}</small>
+            <p>{message.content}</p>
+            {message.answer?.products?.map((p) => (
+              <div className="chat-record" key={p.productId}>
+                <strong>
+                  {p.product.name} · {money(p.product.price)}
+                </strong>
+                <p>{p.reason}</p>
+                <small>In stock at the requested store</small>
+                <div className="inline-actions">
+                  {p.actions?.map((a) => (
+                    <button
+                      key={a.kind}
+                      disabled={pending || !!review}
+                      onClick={() => setReview(a)}
+                    >
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  disabled={pending || !!review}
+                  onClick={() => openProduct(p.productId, message.answer?.storeId)}
+                >
+                  {customer ? 'View product & review purchase' : 'View product'}
+                </button>
+              </div>
+            ))}
+            {message.answer?.records?.map((r) => (
+              <div className="chat-record" key={r.id}>
+                <strong>{r.title}</strong>
+                <small>ID: {r.id}</small>
+                <p>{r.detail}</p>
+                <div className="inline-actions">
+                  {r.actions.map((a) => (
+                    <button
+                      key={a.kind}
+                      disabled={
+                        pending || !!review || completed.includes(`${a.kind}:${a.targetId}`)
+                      }
+                      onClick={() => setReview(a)}
+                    >
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {message.answer?.navigation?.map((a) => (
+              <button
+                key={a.panel}
+                disabled={pending || !!review}
+                onClick={() => openAction(a.panel, message.answer?.storeId)}
+              >
+                {a.label}
+              </button>
+            ))}
+            {!!message.answer?.sources.length && (
+              <div className="chat-sources" aria-label="Policy sources">
+                {message.answer.sources.map((s) => (
+                  <button key={s.chunkId} onClick={() => void showSource(s)}>
+                    {s.document} · {s.section} · {s.version}
                   </button>
                 ))}
               </div>
             )}
-            {messages.map((message) => (
-              <article
-                key={message.id}
-                className={`chat-message ${message.role}`}
-                aria-label={message.role === 'user' ? 'You' : 'RetailPulse chatbot'}
-              >
-                <small>{message.role === 'user' ? 'You' : 'RetailPulse'}</small>
-                <p>{message.content}</p>
-                {message.answer && (
-                  <>
-                    {message.answer.sources.length > 0 && (
-                      <div className="chat-sources" aria-label="Policy sources">
-                        {message.answer.sources.map((source) => (
-                          <button key={source.chunkId} onClick={() => void showSource(source)}>
-                            {source.document} · {source.section} · {source.version}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    {message.answer.mode.endsWith('_EXCERPTS') && (
-                      <small>Policy excerpts · generated answers are not configured</small>
-                    )}
-                    {message.answer.followUpRequired && (
-                      <button className="text-button" onClick={support}>
-                        Contact support
-                      </button>
-                    )}
-                  </>
-                )}
-              </article>
-            ))}
-            {pending && (
-              <p role="status" className="chat-thinking">
-                Checking approved policies…
-              </p>
-            )}
-            <div ref={end} />
-          </div>
-          {error && (
-            <p role="alert" className="chat-error">
-              {error}
-            </p>
-          )}
-          {excerpt && (
-            <aside className="chat-excerpt">
-              <button
-                className="icon-button"
-                aria-label="Close policy source"
-                onClick={() => setExcerpt(null)}
-              >
-                <X size={16} />
-              </button>
-              <strong>{excerpt.title}</strong>
-              <p>{excerpt.content}</p>
-            </aside>
-          )}
-          <form className="chat-composer" onSubmit={(e) => void send(e)}>
-            <label>
-              Message
-              <textarea
-                required
-                minLength={3}
-                maxLength={1000}
-                rows={2}
-                disabled={pending}
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Ask a policy question or a follow-up…"
-              />
-            </label>
-            <button
-              className="button dark"
-              disabled={pending || question.trim().length < 3}
-              type="submit"
-            >
-              <Send size={16} /> Send message
-            </button>
-          </form>
-          <small>
-            Answers use active policies applicable to your membership. No order or payment actions
-            are performed in chat.
-          </small>
-        </>
+          </article>
+        ))}
+        {pending && (
+          <p role="status" className="chat-thinking">
+            Checking your request…
+          </p>
+        )}
+        <div ref={end} />
+      </div>
+      {review && (
+        <ActionReview
+          key={`${review.kind}:${review.targetId}`}
+          action={review}
+          close={() => setReview(null)}
+          done={(result) => {
+            setCompleted((previous) => [...previous, `${review.kind}:${review.targetId}`]);
+            setReview(null);
+            setMessages((previous) => [
+              ...previous,
+              {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: result.message,
+                answer: {
+                  answer: result.message,
+                  mode: 'ACTION',
+                  confidence: 'VERIFIED',
+                  sources: [],
+                  followUpRequired: false,
+                  navigation: result.navigation,
+                  storeId: result.storeId,
+                },
+              },
+            ]);
+          }}
+        />
       )}
+      {error && (
+        <p role="alert" className="chat-error">
+          {error}
+        </p>
+      )}
+      {excerpt && (
+        <aside className="chat-excerpt">
+          <button
+            className="icon-button"
+            aria-label="Close policy source"
+            onClick={() => setExcerpt(null)}
+          >
+            <X size={16} />
+          </button>
+          <strong>{excerpt.title}</strong>
+          <p>{excerpt.content}</p>
+        </aside>
+      )}
+      <form className="chat-composer" onSubmit={(e) => void send(e)}>
+        <label>
+          Message
+          <textarea
+            required
+            maxLength={1000}
+            rows={2}
+            disabled={pending || !!review}
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder="Ask a question or answer a follow-up…"
+          />
+        </label>
+        <button
+          className="button dark"
+          disabled={pending || !!review || !question.trim()}
+          type="submit"
+        >
+          <Send size={16} /> Send message
+        </button>
+      </form>
+      <small>
+        Live results respect your account permissions. Changes require review and confirmation.
+      </small>
     </div>
   );
 }

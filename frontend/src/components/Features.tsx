@@ -24,17 +24,46 @@ export function Login({
   busy: boolean;
 }) {
   const [register, setRegister] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   function handle(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (busy) return;
     const f = new FormData(e.currentTarget);
+    const email = String(f.get('email') || '').trim();
+    const password = String(f.get('password') || '');
+    const name = String(f.get('name') || '').trim();
+    const invalid: Record<string, string> = {};
+    if (register && name.length < 2)
+      invalid.name = name
+        ? 'Enter at least 2 characters for your name.'
+        : 'Please enter your full name.';
+    if (!email) invalid.email = 'Please enter your email address.';
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      invalid.email = 'Enter a valid email address, such as name@example.com.';
+    if (!password.trim()) invalid.password = 'Please enter your password.';
+    else if (password.length < 12)
+      invalid.password = 'Your password must contain at least 12 characters.';
+    setErrors(invalid);
+    if (Object.keys(invalid).length) {
+      (e.currentTarget.elements.namedItem(Object.keys(invalid)[0]) as HTMLInputElement)?.focus();
+      return;
+    }
     submit({
-      email: String(f.get('email')),
-      password: String(f.get('password')),
-      ...(register ? { name: String(f.get('name')) } : {}),
+      email,
+      password,
+      ...(register ? { name } : {}),
     });
   }
   return (
-    <form onSubmit={handle} className="stack">
+    <form
+      onSubmit={handle}
+      noValidate
+      className="stack"
+      onChange={(e) => {
+        const field = e.target instanceof HTMLInputElement ? e.target.name : '';
+        setErrors((previous) => ({ ...previous, [field]: '' }));
+      }}
+    >
       <p>
         {register
           ? 'Create your customer account to save your favourites and shop.'
@@ -50,12 +79,32 @@ export function Login({
             maxLength={80}
             disabled={busy}
             autoComplete="name"
+            aria-invalid={!!errors.name}
+            aria-describedby={errors.name ? 'login-name-error' : undefined}
           />
+          {errors.name && (
+            <small id="login-name-error" role="alert" className="chat-error">
+              {errors.name}
+            </small>
+          )}
         </label>
       )}
       <label>
         Email
-        <input name="email" type="email" required disabled={busy} autoComplete="email" />
+        <input
+          name="email"
+          type="email"
+          required
+          disabled={busy}
+          autoComplete="email"
+          aria-invalid={!!errors.email}
+          aria-describedby={errors.email ? 'login-email-error' : undefined}
+        />
+        {errors.email && (
+          <small id="login-email-error" role="alert" className="chat-error">
+            {errors.email}
+          </small>
+        )}
       </label>
       <label>
         Password
@@ -67,7 +116,14 @@ export function Login({
           maxLength={128}
           disabled={busy}
           autoComplete={register ? 'new-password' : 'current-password'}
+          aria-invalid={!!errors.password}
+          aria-describedby={errors.password ? 'login-password-error' : undefined}
         />
+        {errors.password && (
+          <small id="login-password-error" role="alert" className="chat-error">
+            {errors.password}
+          </small>
+        )}
       </label>
       <small>
         Use at least 12 characters. Demo account credentials are configured in the backend
@@ -81,7 +137,10 @@ export function Login({
         type="button"
         className="text-button"
         disabled={busy}
-        onClick={() => setRegister(!register)}
+        onClick={() => {
+          setRegister(!register);
+          setErrors({});
+        }}
       >
         {register ? 'Already have an account? Sign in' : 'New here? Create an account'}
       </button>

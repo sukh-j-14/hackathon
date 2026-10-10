@@ -1411,6 +1411,27 @@ dialog:has(.chatbot) .modal-header {
   margin-bottom: 10px;
   flex-shrink: 0;
 }
+.chat-record,
+.chat-review {
+  padding: 12px;
+  margin-top: 10px;
+  border: 1px solid var(--line, #d8dfcf);
+  border-radius: 10px;
+  background: #fff;
+  overflow-wrap: anywhere;
+}
+.chat-record > small {
+  display: block;
+}
+.chat-record p,
+.chat-review p {
+  white-space: pre-wrap;
+}
+.chat-review {
+  max-height: 40vh;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
 .chatbot {
   flex: 1;
   min-height: 0;

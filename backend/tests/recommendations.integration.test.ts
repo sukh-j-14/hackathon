@@ -49,7 +49,19 @@ test(
           clarifyingQuestion: null,
         };
       }
-      return Response.json({ choices: [{ message: { content: JSON.stringify(output) } }] });
+      return Response.json({
+        choices: [
+          {
+            message: payload.tools
+              ? {
+                  tool_calls: [
+                    { function: { name: 'search_products', arguments: JSON.stringify(output) } },
+                  ],
+                }
+              : { content: JSON.stringify(output) },
+          },
+        ],
+      });
     });
     try {
       const u = await db.user.findUniqueOrThrow({ where: { email: 'customer@retailpulse.demo' } });

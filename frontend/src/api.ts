@@ -102,10 +102,39 @@ export type Answer = {
   mode: string;
   sources: { chunkId: string; document: string; section: string; version: string }[];
   followUpRequired: boolean;
+  products?: Recommendations['recommendations'];
+  storeId?: string;
+  records?: { id: string; title: string; detail: string; actions: ChatAction[] }[];
+  navigation?: { panel: ChatPanel; label: string }[];
+};
+export type ChatPanel = 'orders' | 'support' | 'operations' | 'knowledge' | 'admin' | 'cart';
+export type ChatAction = {
+  kind:
+    | 'ADD_CART'
+    | 'CANCEL_ORDER'
+    | 'TICKET_REPLY'
+    | 'TICKET_RESOLVE'
+    | 'TICKET_ESCALATE'
+    | 'RESTOCK'
+    | 'APPROVE_STOCK'
+    | 'RECEIVE_STOCK'
+    | 'REJECT_STOCK';
+  targetId: string;
+  label: string;
+  body?: string;
+  quantity?: number;
+  reason?: string;
+  storeId?: string;
 };
 export type Recommendations = {
   interpretedRequirement: string;
-  recommendations: { productId: string; reason: string; availability: string; product: Product }[];
+  recommendations: {
+    productId: string;
+    reason: string;
+    availability: string;
+    product: Product;
+    actions?: ChatAction[];
+  }[];
   clarifyingQuestion: string | null;
 };
 let accessToken = '';

@@ -748,15 +748,26 @@ export default function App() {
       {panel === 'assistant' && user && (
         <Modal title="RetailPulse chatbot" close={close}>
           <Chatbot
-            openAction={setPanel}
+            openAction={(nextPanel, requestedStore) => {
+              if (requestedStore) setStoreId(requestedStore);
+              if (nextPanel === 'cart')
+                void run(async () => {
+                  setCart(await api<CartLine[]>('/cart'));
+                  setPanel(nextPanel);
+                });
+              else setPanel(nextPanel);
+            }}
+            openProduct={(id, requestedStore) =>
+              void run(async () => {
+                setDetail(await api<Product>(`/products/${id}`));
+                if (requestedStore) setStoreId(requestedStore);
+                setPanel(null);
+              })
+            }
             messages={chatMessages}
             setMessages={setChatMessages}
-            support={() => setPanel('support')}
             storeId={storeId}
-            category={filters.category}
             customer={Boolean(customer)}
-            run={run}
-            busy={busy}
           />
         </Modal>
       )}

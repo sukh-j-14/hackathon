@@ -109,13 +109,16 @@ export async function createTicket(actor: Actor, inputBody: unknown) {
   });
 }
 
-export async function replyToTicket(actor: Actor, id: string, input: unknown) {
+export async function replyToTicket(actor: Actor, id: string, input: unknown, approvalId?: string) {
   const { body } = z
     .object({ body: z.string().trim().min(3).max(3000) })
     .strict()
     .parse(input);
   return db.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${id})::bigint)`;
+    // A confirmed chat approval can be retried after a lost connection without sending twice.
+    if (approvalId && (await tx.auditLog.findUnique({ where: { id: approvalId } })))
+      return { ok: true };
     const ticket = await tx.supportTicket.findUnique({ where: { id } });
     assert(ticket, 404, 'NOT_FOUND', 'Ticket not found.');
     staffAccess(actor, ticket);
@@ -125,6 +128,7 @@ export async function replyToTicket(actor: Actor, id: string, input: unknown) {
     });
     await tx.auditLog.create({
       data: {
+        ...(approvalId ? { id: approvalId } : {}),
         actorId: actor.id,
         action: 'TICKET_REPLIED',
         resourceId: id,

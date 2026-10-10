@@ -8,7 +8,11 @@ export const embeddingKey = () => process.env.EMBEDDING_API_KEY || process.env.O
 export const embeddingModel = () => process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 // All four candidate providers expose compatible chat endpoints. Keep credentials server-only.
 // Endpoint/model selection is configuration, so the retail services stay provider-independent.
-export async function generateJson(system: string, input: unknown) {
+export async function generateJson(
+  system: string,
+  input: unknown,
+  tool?: { name: string; description: string; parameters: Record<string, unknown> },
+) {
   assert(chatKey(), 503, 'AI_UNAVAILABLE', 'Configure an AI provider to enable generated answers.');
   const response = await fetch(
     `${(process.env.AI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')}/chat/completions`,
@@ -26,16 +30,37 @@ export async function generateJson(system: string, input: unknown) {
           { role: 'user', content: JSON.stringify(input) },
         ],
         temperature: 0.1,
-        response_format: { type: 'json_object' },
+        ...(tool
+          ? {
+              tools: [{ type: 'function', function: { ...tool, strict: false } }],
+              tool_choice: { type: 'function', function: { name: tool.name } },
+              parallel_tool_calls: false,
+            }
+          : { response_format: { type: 'json_object' } }),
         max_completion_tokens: 1800,
         store: false,
       }),
     },
   );
   assert(response.ok, 503, 'AI_UNAVAILABLE', 'The AI provider is unavailable. Try again later.');
-  const result = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+  const result = (await response.json()) as {
+    choices?: {
+      message?: {
+        content?: string;
+        tool_calls?: { function: { name: string; arguments: string } }[];
+      };
+    }[];
+  };
+  const message = result.choices?.[0]?.message;
+  if (tool)
+    assert(
+      message?.tool_calls?.length === 1 && message.tool_calls[0].function.name === tool.name,
+      503,
+      'INVALID_TOOL',
+      'The assistant could not prepare a valid search. Please try again.',
+    );
   try {
-    return JSON.parse(result.choices?.[0]?.message?.content || '');
+    return JSON.parse(tool ? message!.tool_calls![0].function.arguments : message?.content || '');
   } catch {
     throw new Error('Invalid provider JSON response');
   }
