@@ -1,17 +1,14 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { mkdirSync } from 'node:fs';
-import { resolve, extname } from 'node:path';
+import { extname } from 'node:path';
 import { authenticate } from '../middleware/authenticate.js';
 import { roles } from '../middleware/authorize.js';
 import { HttpError } from '../errors/HttpError.js';
 import * as controller from '../controllers/knowledge.controller.js';
-const directory = resolve('uploads');
-mkdirSync(directory, { recursive: true });
-// Multer generates filenames; uploaded content is never served as executable public assets.
+// Private bytes are persisted in Postgres; serverless disks are not durable.
 const upload = multer({
-  dest: directory,
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
     if (['.pdf', '.md', '.txt', '.csv', '.json'].includes(extname(file.originalname).toLowerCase()))
       cb(null, true);

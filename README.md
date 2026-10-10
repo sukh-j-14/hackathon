@@ -87,7 +87,13 @@ npm run rag:setup -w backend
 
 This development-only command signs in through the admin API, uploads the files in `policies/`, waits for vector ingestion, retires only their known seeded demo-1 predecessors, and activates the new versions. It requires the seeded administrator's current password to match `DEMO_PASSWORD`. Do not use it for real business policies.
 
-Uploads support PDF, Markdown, text, CSV and JSON up to 5 MB. Files are private under `backend/uploads`; keep them on persistent storage when hosting. Scanned PDFs need OCR and are outside this MVP.
+Uploads support PDF, Markdown, text, CSV and JSON up to 4 MB. Private original files are stored in PostgreSQL and omitted from API responses. On Vercel, ingestion runs within the upload/reindex request; locally, the worker processes queued documents. Scanned PDFs need OCR and are outside this MVP.
+
+## Vercel hosting
+
+The root `vercel.json` deploys the Vite frontend and Express API together using Vercel Services (beta). `/api/*` reaches Express and the remaining routes reach the frontend, keeping authentication on the same origin. The backend generates its Prisma client during the build. Apply migrations with `npm run db:deploy` before deploying.
+
+Configure `DATABASE_URL`, `JWT_SECRET`, `OPENAI_API_KEY`, `NODE_ENV=production`, and `APP_ORIGIN` (the exact production HTTPS origin) in Vercel. Provider/model overrides are optional. Never prefix backend secrets with `VITE_`. Local `.env`, uploads, tests, and deliverables are excluded by `.vercelignore`. Policy ingestion has a 300-second function limit; failed or interrupted ingestion can be rebuilt from the admin Knowledge panel.
 
 Only admins can upload, activate or retire policies; the API checks this permission before accepting files. Upload-ready fictional policies and their titles/versions are in `policies/README.md`. Uploading and activation are separate steps. Customer policy answers use applicable active documents; staff ticket replies remain human-authored.
 

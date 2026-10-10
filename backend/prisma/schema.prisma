@@ -244,6 +244,7 @@ model KnowledgeDocument {
   active Boolean @default(false)
   status DocumentStatus @default(QUEUED)
   filePath String?
+  originalFile Bytes?
   fileName String?
   error String?
   leaseUntil DateTime?

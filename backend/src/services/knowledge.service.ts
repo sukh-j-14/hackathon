@@ -1,7 +1,6 @@
 import { z } from 'zod';
-import { readFile, unlink } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
-import { PDFParse } from 'pdf-parse';
 import { parse } from 'csv-parse/sync';
 import { db } from '../config/database.js';
 import { assert } from '../errors/HttpError.js';
@@ -33,25 +32,23 @@ export const documentInput = z
   );
 export async function upload(actor: Actor, data: unknown, file: Express.Multer.File | undefined) {
   assert(file, 400, 'FILE_REQUIRED', 'Select a PDF, Markdown, text, CSV or JSON file.');
-  try {
-    const input = documentInput.parse(data);
-    return await db.knowledgeDocument.create({
-      data: {
-        ...input,
-        effectiveFrom: new Date(input.effectiveFrom),
-        effectiveTo: input.effectiveTo ? new Date(input.effectiveTo) : null,
-        filePath: file.path,
-        fileName: file.originalname,
-      },
-    });
-  } catch (e) {
-    await unlink(file.path).catch(() => {});
-    throw e;
-  }
+  assert(actor.role === 'ADMIN', 403, 'FORBIDDEN', 'Only administrators manage policy documents.');
+  const input = documentInput.parse(data);
+  const document = await db.knowledgeDocument.create({
+    data: {
+      ...input,
+      effectiveFrom: new Date(input.effectiveFrom),
+      effectiveTo: input.effectiveTo ? new Date(input.effectiveTo) : null,
+      originalFile: new Uint8Array(file.buffer),
+      fileName: file.originalname,
+    },
+    omit: { filePath: true, originalFile: true },
+  });
+  return document;
 }
 export async function listDocuments() {
   return db.knowledgeDocument.findMany({
-    omit: { filePath: true },
+    omit: { filePath: true, originalFile: true },
     include: { _count: { select: { chunks: true } } },
     orderBy: { createdAt: 'desc' },
   });
@@ -136,10 +133,11 @@ export function chunkText(text: string) {
   }
   return chunks;
 }
-export async function processOneDocument() {
+export async function processOneDocument(id?: string) {
   // Claim with a lease so a restarted worker can recover an interrupted upload.
   const pending = await db.knowledgeDocument.findFirst({
     where: {
+      ...(id ? { id } : {}),
       attempts: { lt: 3 },
       OR: [{ status: 'QUEUED' }, { status: 'PROCESSING', leaseUntil: { lt: new Date() } }],
     },
@@ -157,20 +155,37 @@ export async function processOneDocument() {
   if (!claim.count) return true;
   try {
     // Seeded documents have no upload file. Rebuild them from their retained policy paragraphs.
-    const retained = !pending.filePath
-      ? await db.documentChunk.findMany({ where: { documentId: pending.id } })
-      : [];
-    const buffer = pending.filePath
-      ? await readFile(pending.filePath)
-      : Buffer.from(
-          retained
-            .filter((c) => c.content.replace(/^#{1,6}\s+/, '').trim() !== c.section.trim())
-            .map((c) => `## ${c.section}\n\n${c.content}`)
-            .join('\n\n'),
-        );
-    const ext = extname(pending.fileName || '').toLowerCase();
+    const retained =
+      !pending.originalFile && (!pending.filePath || Boolean(process.env.VERCEL))
+        ? await db.documentChunk.findMany({ where: { documentId: pending.id } })
+        : [];
+    const buffer = pending.originalFile
+      ? Buffer.from(pending.originalFile)
+      : pending.filePath && !process.env.VERCEL
+        ? await readFile(pending.filePath)
+        : Buffer.from(
+            retained
+              .filter((c) => c.content.replace(/^#{1,6}\s+/, '').trim() !== c.section.trim())
+              .map((c) => `## ${c.section}\n\n${c.content}`)
+              .join('\n\n'),
+          );
+    const ext =
+      !pending.originalFile && (!pending.filePath || process.env.VERCEL)
+        ? '.md'
+        : extname(pending.fileName || '').toLowerCase();
     let text: string;
     if (ext === '.pdf') {
+      // Explicitly bundle PDF.js native support; load parsing only for PDF ingestion.
+      const canvas = await import('@napi-rs/canvas');
+      Object.assign(globalThis, {
+        DOMMatrix: canvas.DOMMatrix,
+        ImageData: canvas.ImageData,
+        Path2D: canvas.Path2D,
+      });
+      const { PDFParse } = await import('pdf-parse');
+      // The packaged worker data URL avoids an untraced runtime file dependency.
+      const { getData } = await import('pdf-parse/worker');
+      PDFParse.setWorker(getData());
       assert(
         buffer.subarray(0, 5).toString() === '%PDF-',
         400,
@@ -268,7 +283,7 @@ function eligible(actor: Actor, category?: string, documentType?: string) {
 export async function source(actor: Actor, id: string) {
   const c = await db.documentChunk.findFirst({
     where: { id, document: eligible(actor) },
-    include: { document: { omit: { filePath: true } } },
+    include: { document: { omit: { filePath: true, originalFile: true } } },
   });
   assert(c, 404, 'NOT_FOUND', 'Source is unavailable or outside your access.');
   return {

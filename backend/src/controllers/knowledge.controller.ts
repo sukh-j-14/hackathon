@@ -12,7 +12,10 @@ export async function upload(req: Request, res: Response) {
   } catch {
     metadata = {};
   }
-  res.status(202).json(await service.upload(req.actor, metadata, req.file));
+  const document = await service.upload(req.actor, metadata, req.file);
+  // Vercel has no persistent worker. Finish this bounded ingestion within the request.
+  if (process.env.VERCEL) await service.processOneDocument(document.id);
+  res.status(202).json(document);
 }
 export async function activate(req: Request, res: Response) {
   const { active } = z.object({ active: z.boolean() }).strict().parse(req.body);
@@ -22,5 +25,7 @@ export async function source(req: Request, res: Response) {
   res.json(await service.source(req.actor, String(req.params.id)));
 }
 export async function reindex(req: Request, res: Response) {
-  res.status(202).json(await service.reindex(req.actor, String(req.params.id)));
+  const result = await service.reindex(req.actor, String(req.params.id));
+  if (process.env.VERCEL) await service.processOneDocument(String(req.params.id));
+  res.status(202).json(result);
 }

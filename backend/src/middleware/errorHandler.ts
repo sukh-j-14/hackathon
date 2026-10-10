@@ -24,7 +24,7 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     return res.status(400).json({
       error: {
         code: 'FILE_TOO_LARGE',
-        message: 'Documents must be smaller than 5 MB.',
+        message: 'Documents must be smaller than 4 MB.',
         requestId,
       },
     });

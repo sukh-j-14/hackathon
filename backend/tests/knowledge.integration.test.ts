@@ -87,6 +87,12 @@ test(
         )
         .expect(202);
       documentId = upload.body.id;
+      // Uploads survive a different serverless instance and never expose private bytes.
+      assert.equal(upload.body.originalFile, undefined);
+      assert.equal(upload.body.filePath, undefined);
+      const storedUpload = await db.knowledgeDocument.findUniqueOrThrow({ where: { id: documentId } });
+      assert(storedUpload.originalFile && storedUpload.originalFile.byteLength > 20);
+      assert.equal(storedUpload.filePath, null);
       await request(app)
         .patch(`/api/v1/knowledge/documents/${documentId}`)
         .set(manager)

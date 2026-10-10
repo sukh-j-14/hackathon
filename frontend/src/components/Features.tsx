@@ -857,7 +857,7 @@ export function KnowledgePanel({
         </div>
         <small>
           India demo scope. Applies to all membership tiers and roles. Upload API supports narrower
-          tier and audience metadata. Maximum 5 MB.
+          tier and audience metadata. Maximum 4 MB.
         </small>
         <button className="button dark" disabled={busy}>
           Upload for ingestion <Plus size={17} />

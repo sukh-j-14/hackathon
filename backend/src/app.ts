@@ -16,6 +16,8 @@ import { assistantRoutes } from './routes/assistant.routes.js';
 import { chatKey, embeddingKey } from './services/ai.service.js';
 export const app = express();
 app.disable('x-powered-by');
+// Vercel terminates HTTPS and forwards requests through its trusted edge proxy.
+if (process.env.VERCEL) app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors({ origin: config.APP_ORIGIN, credentials: true }));
 app.use(express.json({ limit: '100kb' }), cookieParser());
@@ -53,3 +55,4 @@ app.use((_req, res) =>
   }),
 );
 app.use(errorHandler);
+export default app;
