@@ -130,6 +130,10 @@ export async function recommend(actor: Actor, input: unknown) {
   );
   return {
     ...output,
+    clarifyingQuestion:
+      output.clarifyingQuestion ||
+      intent.clarifyingQuestion ||
+      (!budget ? 'What budget should I use to refine these matches?' : null),
     recommendations: output.recommendations.map((r) => ({
       ...r,
       availability: 'IN_STOCK',

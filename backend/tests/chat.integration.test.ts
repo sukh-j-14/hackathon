@@ -166,7 +166,7 @@ test(
       );
       routed = { intent: 'CHECKOUT' };
       assert.equal((await query(actor)).navigation?.[0].panel, 'cart');
-      routed = { intent: 'CHECKOUT', targetId: product.id, quantity: 1 };
+      routed = { intent: 'CHECKOUT', targetId: product.id, quantity: 1, period: null, page: null };
       assert.equal((await query(actor)).records?.[0].actions[0].kind, 'ADD_CART');
       routed = { intent: 'ACCOUNTS' };
       await denied(() => query(manager));

@@ -51,8 +51,18 @@ const intentSchema = z.object({
   quantity: z.number().int().min(1).max(1000).nullable().default(null),
   body: z.string().max(3000).nullable().default(null),
   reason: z.string().max(500).nullable().default(null),
-  period: z.enum(['ALL', 'TODAY', 'WEEK', 'MONTH']).default('ALL'),
-  page: z.number().int().min(1).max(1000).default(1),
+  // Providers sometimes return null for irrelevant paging/date filters; normalize before dispatch.
+  period: z
+    .enum(['ALL', 'TODAY', 'WEEK', 'MONTH'])
+    .nullish()
+    .transform((value) => value || 'ALL'),
+  page: z
+    .number()
+    .int()
+    .min(1)
+    .max(1000)
+    .nullish()
+    .transform((value) => value || 1),
 });
 type RecordCard = { id: string; title: string; detail: string; actions: ChatAction[] };
 const reply = (text: string, records: RecordCard[] = [], extra: Record<string, unknown> = {}) => ({
