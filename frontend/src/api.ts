@@ -117,6 +117,7 @@ export type ChatAction = {
     | 'TICKET_RESOLVE'
     | 'TICKET_ESCALATE'
     | 'RESTOCK'
+    | 'SET_STOCK'
     | 'APPROVE_STOCK'
     | 'RECEIVE_STOCK'
     | 'REJECT_STOCK';

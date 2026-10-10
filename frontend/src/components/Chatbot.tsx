@@ -17,7 +17,7 @@ export type ChatMessage = {
 };
 
 // One review control handles every server-approved mutation. Model text never executes writes.
-function ActionReview({
+export function ActionReview({
   action,
   done,
   close,
@@ -32,7 +32,7 @@ function ActionReview({
   close: () => void;
 }) {
   const [body, setBody] = useState(action.body || '');
-  const [quantity, setQuantity] = useState(action.quantity || 1);
+  const [quantity, setQuantity] = useState(action.quantity ?? 1);
   const [reason, setReason] = useState(action.reason || '');
   const [approval, setApproval] = useState<{ token: string; summary: string } | null>(null);
   const [pending, setPending] = useState(false);
@@ -56,7 +56,7 @@ function ActionReview({
             kind: action.kind,
             targetId: action.targetId,
             ...(action.kind === 'TICKET_REPLY' ? { body } : {}),
-            ...(action.kind === 'RESTOCK' ? { quantity, reason } : {}),
+            ...(['RESTOCK', 'SET_STOCK'].includes(action.kind) ? { quantity, reason } : {}),
             ...(action.kind === 'ADD_CART' ? { quantity, storeId: action.storeId } : {}),
           }),
         });
@@ -108,15 +108,15 @@ function ActionReview({
           />
         </label>
       )}
-      {!approval && action.kind === 'RESTOCK' && (
+      {!approval && ['RESTOCK', 'SET_STOCK'].includes(action.kind) && (
         <>
           <label>
-            Units to replenish
+            {action.kind === 'SET_STOCK' ? 'New available stock quantity' : 'Units to replenish'}
             <input
               type="number"
               required
-              min={1}
-              max={1000}
+              min={action.kind === 'SET_STOCK' ? 0 : 1}
+              max={action.kind === 'SET_STOCK' ? 1000000 : 1000}
               step={1}
               value={quantity}
               disabled={pending}
@@ -370,7 +370,9 @@ export function Chatbot({
                     <button
                       key={a.kind}
                       disabled={
-                        pending || !!review || completed.includes(`${a.kind}:${a.targetId}`)
+                        pending ||
+                        !!review ||
+                        (a.kind !== 'SET_STOCK' && completed.includes(`${a.kind}:${a.targetId}`))
                       }
                       onClick={() => setReview(a)}
                     >

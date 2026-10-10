@@ -225,6 +225,70 @@ test(
       assert(
         (await query(actor)).records?.[0].detail.includes('The manager is checking your issue.'),
       );
+      // Exact counts can reduce to zero or increase stock; only confirmation writes and audits.
+      const adjustment = {
+        kind: 'SET_STOCK',
+        targetId: inventory.id,
+        quantity: 0,
+        reason: 'Physical count correction',
+      };
+      await denied(() => prepareChatAction(actor, adjustment));
+      await denied(() => prepareChatAction({ ...manager, storeIds: ['store-mumbai'] }, adjustment));
+      for (const quantity of [-1, 1.5, 1000001])
+        await assert.rejects(() => prepareChatAction(manager, { ...adjustment, quantity }));
+      await assert.rejects(() => prepareChatAction(manager, { ...adjustment, reason: '' }));
+      const zero = await prepareChatAction(manager, adjustment);
+      assert(zero.summary?.includes('from 2 to 0'));
+      assert.equal(
+        (await db.inventory.findUniqueOrThrow({ where: { id: inventory.id } })).quantity,
+        2,
+      );
+      await denied(() =>
+        confirmChatAction({ ...manager, storeIds: ['store-mumbai'] }, { token: zero.token }),
+      );
+      await confirmChatAction(manager, { token: zero.token });
+      await confirmChatAction(manager, { token: zero.token });
+      assert.equal(
+        (await db.inventory.findUniqueOrThrow({ where: { id: inventory.id } })).quantity,
+        0,
+      );
+      assert.equal(
+        await db.auditLog.count({
+          where: { resourceId: inventory.id, action: 'STOCK_QUANTITY_SET' },
+        }),
+        1,
+      );
+      await db.inventory.update({ where: { id: inventory.id }, data: { quantity: 1 } });
+      await confirmChatAction(manager, { token: zero.token });
+      assert.equal(
+        (await db.inventory.findUniqueOrThrow({ where: { id: inventory.id } })).quantity,
+        1,
+        'Retry must not overwrite a later stock change',
+      );
+      const increase = await prepareChatAction(admin, { ...adjustment, quantity: 7 });
+      await confirmChatAction(admin, { token: increase.token });
+      const reset = await prepareChatAction(manager, { ...adjustment, quantity: 2 });
+      await confirmChatAction(manager, { token: reset.token });
+      const stale = await prepareChatAction(manager, { ...adjustment, quantity: 8 });
+      await db.inventory.update({ where: { id: inventory.id }, data: { quantity: 3 } });
+      await assert.rejects(
+        () => confirmChatAction(manager, { token: stale.token }),
+        (e) => e instanceof HttpError && e.code === 'STOCK_CHANGED',
+      );
+      assert.equal(
+        (await db.inventory.findUniqueOrThrow({ where: { id: inventory.id } })).quantity,
+        3,
+      );
+      await db.inventory.update({ where: { id: inventory.id }, data: { quantity: 2 } });
+      routed = {
+        intent: 'SET_STOCK',
+        targetId: inventory.id,
+        quantity: 0,
+        reason: 'Physical count correction',
+      };
+      const stockChat = await query(manager, 'Set this stock to zero');
+      assert.equal(stockChat.records?.[0].actions.find((a) => a.kind === 'SET_STOCK')?.quantity, 0);
+      assert(!stockChat.records?.[0].actions.some((a) => a.kind === 'RESTOCK'));
       const restock = await prepareChatAction(manager, {
         kind: 'RESTOCK',
         targetId: inventory.id,
@@ -278,7 +342,11 @@ test(
       );
       routed = { intent: 'LOW_STOCK', targetId: inventory.id };
       const pendingStock = await query(manager);
-      assert.equal(pendingStock.records?.find((r) => r.id === inventory.id)?.actions.length, 0);
+      assert(
+        !pendingStock.records
+          ?.find((r) => r.id === inventory.id)
+          ?.actions.some((a) => a.kind === 'RESTOCK'),
+      );
       assert(
         pendingStock.records
           ?.find((r) => r.id === proposal.id)

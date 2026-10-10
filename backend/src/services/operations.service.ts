@@ -6,6 +6,59 @@ import { assert } from '../errors/HttpError.js';
 
 import { storeAccess, type Actor } from '../middleware/authorize.js';
 
+// Exact physical-count correction. Compare the reviewed version so concurrent sales/receipts
+// cannot be overwritten. The approval ID also makes network retries safe.
+export async function setStockQuantity(
+  actor: Actor,
+  inventoryId: string,
+  raw: unknown,
+  approvalId: string,
+) {
+  const input = z
+    .object({
+      quantity: z.number().int().min(0).max(1000000),
+      reason: z.string().trim().min(5).max(500),
+      stockVersion: z.string().datetime(),
+    })
+    .strict()
+    .parse(raw);
+  return db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${approvalId})::bigint)`;
+    const item = await tx.inventory.findUnique({ where: { id: inventoryId } });
+    assert(item, 404, 'NOT_FOUND', 'Inventory record not found.');
+    storeAccess(actor, item.locationId);
+    const completed = await tx.auditLog.findUnique({ where: { id: approvalId } });
+    if (completed) return { ok: true };
+    const changed = await tx.inventory.updateMany({
+      where: { id: item.id, updatedAt: new Date(input.stockVersion) },
+      data: { quantity: input.quantity },
+    });
+    assert(
+      changed.count === 1,
+      409,
+      'STOCK_CHANGED',
+      'Stock changed since you reviewed it. Review the current quantity again before confirming.',
+    );
+    await tx.auditLog.create({
+      data: {
+        id: approvalId,
+        actorId: actor.id,
+        action: 'STOCK_QUANTITY_SET',
+        resourceId: item.id,
+        details: {
+          productId: item.productId,
+          locationId: item.locationId,
+          before: item.quantity,
+          after: input.quantity,
+          change: input.quantity - item.quantity,
+          reason: input.reason,
+        },
+      },
+    });
+    return { ok: true };
+  });
+}
+
 export async function getInventory(actor: Actor, query: Record<string, unknown>) {
   const locationId = typeof query.storeId === 'string' ? query.storeId : undefined;
   if (locationId) storeAccess(actor, locationId);

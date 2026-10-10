@@ -6,7 +6,11 @@ import { db } from '../config/database.js';
 import { assert, HttpError } from '../errors/HttpError.js';
 import { storeAccess, type Actor } from '../middleware/authorize.js';
 import { replyToTicket, updateTicket } from './support.service.js';
-import { createReplenishment, updateReplenishment } from './operations.service.js';
+import {
+  createReplenishment,
+  updateReplenishment,
+  setStockQuantity,
+} from './operations.service.js';
 import { updateOrderStatus, updateCart } from './shopping.service.js';
 import {
   existingReplenishment,
@@ -23,13 +27,15 @@ export const actionInput = z
       'TICKET_RESOLVE',
       'TICKET_ESCALATE',
       'RESTOCK',
+      'SET_STOCK',
       'APPROVE_STOCK',
       'RECEIVE_STOCK',
       'REJECT_STOCK',
     ]),
     targetId: z.string().min(1).max(100),
     body: z.string().trim().max(3000).optional(),
-    quantity: z.number().int().min(1).max(1000).optional(),
+    quantity: z.number().int().min(0).max(1000000).optional(),
+    stockVersion: z.string().datetime().optional(),
     reason: z.string().trim().max(500).optional(),
     storeId: z.string().min(1).max(100).optional(),
   })
@@ -129,6 +135,22 @@ export async function prepareChatAction(actor: Actor, raw: unknown) {
       );
       summary = `Resolve “${ticket.subject}”. The customer will see the saved replies.`;
     }
+  } else if (input.kind === 'SET_STOCK') {
+    const item = await db.inventory.findUnique({
+      where: { id: input.targetId },
+      include: { product: true, location: true },
+    });
+    assert(item, 404, 'NOT_FOUND', 'Inventory record not found.');
+    storeAccess(actor, item.locationId);
+    assert(
+      input.quantity !== undefined && (input.reason?.length || 0) >= 5,
+      400,
+      'DETAILS_REQUIRED',
+      'Enter a whole-number quantity of 0–1,000,000 and a reason of at least 5 characters.',
+    );
+    // Replace any caller-supplied version with the current server snapshot before signing.
+    input.stockVersion = item.updatedAt.toISOString();
+    summary = `Set ${item.product.name} at ${item.location.name}, ${item.location.city} from ${item.quantity} to ${input.quantity} units (${input.quantity - item.quantity >= 0 ? '+' : ''}${input.quantity - item.quantity}). Reason: ${input.reason}. This replaces available stock immediately; pending replenishments stay separate.`;
   } else if (input.kind === 'RESTOCK') {
     const existing = await pendingReplenishment(actor, input.targetId);
     if (existing) return existingReplenishment(existing);
@@ -139,7 +161,7 @@ export async function prepareChatAction(actor: Actor, raw: unknown) {
     assert(item, 404, 'NOT_FOUND', 'Inventory record not found.');
     storeAccess(actor, item.locationId);
     assert(
-      input.quantity && (input.reason?.length || 0) >= 5,
+      input.quantity && input.quantity <= 1000 && (input.reason?.length || 0) >= 5,
       400,
       'DETAILS_REQUIRED',
       'Enter 1–1000 units and a reason of at least 5 characters.',
@@ -218,6 +240,36 @@ export async function confirmChatAction(actor: Actor, raw: unknown) {
         'Cart updated. Continue to checkout to review your address, delivery charges and payment.',
       navigation: [{ panel: 'cart', label: 'Continue to address & payment' }],
       storeId: input.storeId,
+    };
+  } else if (input.kind === 'SET_STOCK') {
+    await setStockQuantity(
+      actor,
+      input.targetId,
+      { quantity: input.quantity, reason: input.reason, stockVersion: input.stockVersion },
+      jti,
+    );
+    const item = await db.inventory.findUniqueOrThrow({
+      where: { id: input.targetId },
+      include: { product: true, location: true },
+    });
+    return {
+      ok: true,
+      message: `Stock quantity saved. ${item.product.name} at ${item.location.name} now has ${item.quantity} available units.`,
+      records: [
+        {
+          id: item.id,
+          title: item.product.name,
+          detail: `${item.location.name}, ${item.location.city} · ${item.quantity} in stock`,
+          actions: [
+            {
+              kind: 'SET_STOCK' as const,
+              targetId: item.id,
+              label: 'Set stock quantity',
+              quantity: item.quantity,
+            },
+          ],
+        },
+      ],
     };
   } else if (input.kind === 'CANCEL_ORDER')
     await updateOrderStatus(actor, { status: 'CANCELLED' }, input.targetId);

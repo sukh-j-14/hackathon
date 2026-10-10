@@ -16,6 +16,7 @@ import {
   type Store,
 } from '../api';
 import { ProductArt } from '../ProductArt';
+import { ActionReview } from './Chatbot';
 export function Login({
   submit,
   busy,
@@ -644,6 +645,8 @@ export function Operations({
   const [location, setLocation] = useState('');
   const [lowOnly, setLowOnly] = useState(false);
   const [restock, setRestock] = useState<Inventory | null>(null);
+  const [adjustStock, setAdjustStock] = useState<Inventory | null>(null);
+  const [adjustmentMessage, setAdjustmentMessage] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [data, setData] = useState<{ items: Inventory[]; proposals: Proposal[] }>({
     items: [],
@@ -660,7 +663,8 @@ export function Operations({
     <div className="stack">
       <p>
         Stock is scoped to your assigned locations. Replenishment requires explicit approval and
-        receipt.
+        receipt. Set stock quantity corrects the exact available count after review and
+        confirmation.
       </p>
       <div className="filter-controls">
         <input
@@ -690,6 +694,24 @@ export function Operations({
         </button>
       </div>
       {!loaded && <p role="status">Loading inventory…</p>}
+      {adjustmentMessage && <p role="status">{adjustmentMessage}</p>}
+      {adjustStock && (
+        <ActionReview
+          key={adjustStock.id}
+          action={{
+            kind: 'SET_STOCK',
+            targetId: adjustStock.id,
+            label: `Set stock quantity · ${adjustStock.product.name} · ${adjustStock.location.name}`,
+            quantity: adjustStock.quantity,
+          }}
+          close={() => setAdjustStock(null)}
+          done={(result) => {
+            setAdjustmentMessage(result.message);
+            setAdjustStock(null);
+            void run(load);
+          }}
+        />
+      )}
       {restock && (
         <form
           key={restock.id}
@@ -782,8 +804,19 @@ export function Operations({
                   </td>
                   <td>
                     <button
+                      disabled={busy || !!adjustStock || !!restock}
+                      onClick={() => {
+                        setAdjustStock(i);
+                        setAdjustmentMessage('');
+                      }}
+                    >
+                      Set stock quantity
+                    </button>
+                    <button
                       disabled={
                         busy ||
+                        !!adjustStock ||
+                        !!restock ||
                         data.proposals.some(
                           (p) =>
                             p.product.id === i.productId &&
