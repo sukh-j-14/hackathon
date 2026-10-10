@@ -109,6 +109,21 @@ export type Recommendations = {
   clarifyingQuestion: string | null;
 };
 let accessToken = '';
+// Keep forms recoverable on lost connections and stalled requests.
+async function request(input: string, options: RequestInit = {}) {
+  const timeout = AbortSignal.timeout(120_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  try {
+    return await fetch(input, { ...options, signal });
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    throw new Error(
+      timeout.aborted
+        ? 'The request took too long. Please try again. For an order, check My orders before retrying.'
+        : 'Could not connect. Check your internet connection and try again.',
+    );
+  }
+}
 export function setToken(token: string) {
   accessToken = token;
 }
@@ -116,7 +131,7 @@ let refreshPending: Promise<{ accessToken: string; user: User }> | null = null;
 export async function restoreSession() {
   // Share one refresh request across concurrent API calls to avoid rotating the same cookie twice.
   if (!refreshPending)
-    refreshPending = fetch('/api/v1/auth/refresh', {
+    refreshPending = request('/api/v1/auth/refresh', {
       method: 'POST',
       credentials: 'include',
       headers: { 'x-requested-with': 'RetailPulse' },
@@ -138,7 +153,7 @@ export async function api<T>(path: string, options: RequestInit = {}, retry = tr
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
   if (options.body && !(options.body instanceof FormData))
     headers.set('Content-Type', 'application/json');
-  const r = await fetch(`/api/v1${path}`, { ...options, headers, credentials: 'include' });
+  const r = await request(`/api/v1${path}`, { ...options, headers, credentials: 'include' });
   if (r.status === 401 && retry && !path.startsWith('/auth/')) {
     await restoreSession();
     return api<T>(path, options, false);
@@ -148,6 +163,9 @@ export async function api<T>(path: string, options: RequestInit = {}, retry = tr
   try {
     body = await r.json();
   } catch {
+    if (r.status === 413)
+      throw new Error('This upload is too large. Select a file smaller than 4 MB.');
+    if (r.status === 429) throw new Error('Too many requests. Please wait a moment and try again.');
     throw new Error('The service is unavailable. Please try again in a moment.');
   }
   if (!r.ok) throw new Error(body.error?.message || 'Request failed. Please retry.');

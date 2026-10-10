@@ -20,6 +20,29 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     return res
       .status(409)
       .json({ error: { code: 'CONFLICT', message: 'This record already exists.', requestId } });
+  if (err && typeof err === 'object' && 'type' in err && err.type === 'entity.too.large')
+    return res.status(413).json({
+      error: {
+        code: 'REQUEST_TOO_LARGE',
+        message: 'This request is too large. Shorten the text and try again.',
+        requestId,
+      },
+    });
+  if (
+    err &&
+    typeof err === 'object' &&
+    'code' in err &&
+    ['LIMIT_UNEXPECTED_FILE', 'LIMIT_FILE_COUNT', 'LIMIT_FIELD_VALUE', 'LIMIT_PART_COUNT'].includes(
+      String(err.code),
+    )
+  )
+    return res.status(400).json({
+      error: {
+        code: 'INVALID_UPLOAD',
+        message: 'Upload one supported document with valid metadata.',
+        requestId,
+      },
+    });
   if (err && typeof err === 'object' && 'code' in err && err.code === 'LIMIT_FILE_SIZE')
     return res.status(400).json({
       error: {

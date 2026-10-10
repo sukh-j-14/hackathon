@@ -43,12 +43,19 @@ export function Login({
       {register && (
         <label>
           Full name
-          <input name="name" required minLength={2} autoComplete="name" />
+          <input
+            name="name"
+            required
+            minLength={2}
+            maxLength={80}
+            disabled={busy}
+            autoComplete="name"
+          />
         </label>
       )}
       <label>
         Email
-        <input name="email" type="email" required autoComplete="email" />
+        <input name="email" type="email" required disabled={busy} autoComplete="email" />
       </label>
       <label>
         Password
@@ -57,6 +64,8 @@ export function Login({
           type="password"
           required
           minLength={12}
+          maxLength={128}
+          disabled={busy}
           autoComplete={register ? 'new-password' : 'current-password'}
         />
       </label>
@@ -68,7 +77,12 @@ export function Login({
         {busy ? 'Please wait…' : register ? 'Create account' : 'Sign in'}
         <ArrowRight size={17} />
       </button>
-      <button type="button" className="text-button" onClick={() => setRegister(!register)}>
+      <button
+        type="button"
+        className="text-button"
+        disabled={busy}
+        onClick={() => setRegister(!register)}
+      >
         {register ? 'Already have an account? Sign in' : 'New here? Create an account'}
       </button>
     </form>
@@ -157,6 +171,7 @@ export function Cart({
               value={address}
               disabled={busy}
               minLength={10}
+              maxLength={500}
               onChange={(e) => setAddress(e.target.value)}
             />
           </label>
@@ -417,7 +432,7 @@ export function Preferences({
       </p>
       <label>
         Name
-        <input name="name" required minLength={2} defaultValue={user.name} />
+        <input name="name" required minLength={2} maxLength={80} defaultValue={user.name} />
       </label>
       <label>
         Preferred budget
@@ -823,15 +838,15 @@ export function KnowledgePanel({
         <div className="form-grid">
           <label>
             Document title
-            <input name="title" required minLength={3} />
+            <input name="title" required minLength={3} maxLength={120} disabled={busy} />
           </label>
           <label>
             Version
-            <input name="version" required placeholder="2026.1" />
+            <input name="version" required maxLength={30} disabled={busy} placeholder="2026.1" />
           </label>
           <label>
             Category
-            <input name="category" placeholder="ALL" />
+            <input name="category" maxLength={40} disabled={busy} placeholder="ALL" />
           </label>
           <label>
             Type
@@ -852,7 +867,25 @@ export function KnowledgePanel({
           </label>
           <label>
             File
-            <input name="file" type="file" accept=".pdf,.md,.txt,.json,.csv" required />
+            <input
+              name="file"
+              type="file"
+              accept=".pdf,.md,.txt,.json,.csv"
+              required
+              disabled={busy}
+              onChange={(e) => {
+                const file = e.currentTarget.files?.[0];
+                const invalid =
+                  file &&
+                  (file.size > 4 * 1024 * 1024 || !/\.(pdf|md|txt|json|csv)$/i.test(file.name));
+                e.currentTarget.setCustomValidity(
+                  invalid
+                    ? 'Choose a PDF, Markdown, text, JSON or CSV file smaller than 4 MB.'
+                    : '',
+                );
+                if (invalid) e.currentTarget.reportValidity();
+              }}
+            />
           </label>
         </div>
         <small>

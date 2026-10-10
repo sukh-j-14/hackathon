@@ -20,12 +20,12 @@ app.disable('x-powered-by');
 if (process.env.VERCEL) app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors({ origin: config.APP_ORIGIN, credentials: true }));
-app.use(express.json({ limit: '100kb' }), cookieParser());
 app.use((_req, res, next) => {
   res.locals.requestId = randomUUID();
   res.setHeader('x-request-id', res.locals.requestId);
   next();
 });
+app.use(express.json({ limit: '100kb' }), cookieParser());
 app.use(
   '/api',
   rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false }),
