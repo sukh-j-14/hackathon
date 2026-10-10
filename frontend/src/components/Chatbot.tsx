@@ -23,7 +23,12 @@ function ActionReview({
   close,
 }: {
   action: ChatAction;
-  done: (result: { message: string; navigation?: Answer['navigation']; storeId?: string }) => void;
+  done: (result: {
+    message: string;
+    navigation?: Answer['navigation'];
+    storeId?: string;
+    records?: Answer['records'];
+  }) => void;
   close: () => void;
 }) {
   const [body, setBody] = useState(action.body || '');
@@ -39,23 +44,37 @@ function ActionReview({
     setError('');
     try {
       if (!approval) {
-        setApproval(
-          await api('/assistant/chat/actions/prepare', {
-            method: 'POST',
-            body: JSON.stringify({
-              kind: action.kind,
-              targetId: action.targetId,
-              ...(action.kind === 'TICKET_REPLY' ? { body } : {}),
-              ...(action.kind === 'RESTOCK' ? { quantity, reason } : {}),
-              ...(action.kind === 'ADD_CART' ? { quantity, storeId: action.storeId } : {}),
-            }),
+        const prepared = await api<{
+          token?: string;
+          summary?: string;
+          existingRequest?: boolean;
+          message?: string;
+          records?: Answer['records'];
+        }>('/assistant/chat/actions/prepare', {
+          method: 'POST',
+          body: JSON.stringify({
+            kind: action.kind,
+            targetId: action.targetId,
+            ...(action.kind === 'TICKET_REPLY' ? { body } : {}),
+            ...(action.kind === 'RESTOCK' ? { quantity, reason } : {}),
+            ...(action.kind === 'ADD_CART' ? { quantity, storeId: action.storeId } : {}),
           }),
-        );
+        });
+        // A pending request replaces the duplicate form with its real, reviewable workflow actions.
+        if (prepared.existingRequest)
+          done({
+            message: prepared.message || 'An existing request was found.',
+            records: prepared.records,
+          });
+        else if (prepared.token && prepared.summary)
+          setApproval({ token: prepared.token, summary: prepared.summary });
+        else throw new Error('Could not prepare the action. Please try again.');
       } else {
         const result = await api<{
           message: string;
           navigation?: Answer['navigation'];
           storeId?: string;
+          records?: Answer['records'];
         }>('/assistant/chat/actions/confirm', {
           method: 'POST',
           body: JSON.stringify({ token: approval.token }),
@@ -397,7 +416,22 @@ export function Chatbot({
             setCompleted((previous) => [...previous, `${review.kind}:${review.targetId}`]);
             setReview(null);
             setMessages((previous) => [
-              ...previous,
+              // Keep earlier messages as history; only the refreshed card offers current actions.
+              ...previous.map((message) =>
+                message.answer?.records && result.records?.length
+                  ? {
+                      ...message,
+                      answer: {
+                        ...message.answer,
+                        records: message.answer.records.map((record) =>
+                          result.records!.some((current) => current.id === record.id)
+                            ? { ...record, actions: [] }
+                            : record,
+                        ),
+                      },
+                    }
+                  : message,
+              ),
               {
                 id: crypto.randomUUID(),
                 role: 'assistant',
@@ -409,6 +443,7 @@ export function Chatbot({
                   sources: [],
                   followUpRequired: false,
                   navigation: result.navigation,
+                  records: result.records,
                   storeId: result.storeId,
                 },
               },

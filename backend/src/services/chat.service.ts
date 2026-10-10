@@ -9,6 +9,7 @@ import { answer } from './knowledge.service.js';
 import { approvedActions } from './actions.service.js';
 import type { ChatAction } from './chat-actions.service.js';
 import { catalogueSort, listChatProducts, namedCatalogueStore } from './chat-catalogue.service.js';
+import { replenishmentCard } from './chat-replenishment.service.js';
 
 const inputSchema = z
   .object({
@@ -460,23 +461,7 @@ Resolve locationId only from supplied locations when explicitly requested; other
         take: 10,
       }),
     ]);
-    return reply(
-      caption(count),
-      proposals.map((p) => ({
-        id: p.id,
-        title: p.product.name,
-        detail: `${p.location.name} · ${p.quantity} units · ${p.status}\n${p.reason}`,
-        actions:
-          p.status === 'PROPOSED'
-            ? [
-                action('APPROVE_STOCK', p.id, 'Approve request'),
-                action('REJECT_STOCK', p.id, 'Reject request'),
-              ]
-            : p.status === 'APPROVED'
-              ? [action('RECEIVE_STOCK', p.id, 'Receive stock')]
-              : [],
-      })),
-    );
+    return reply(caption(count), proposals.map(replenishmentCard));
   }
   const where: Prisma.InventoryWhereInput = {
     ...locationScope,
@@ -498,18 +483,40 @@ Resolve locationId only from supplied locations when explicitly requested; other
       take: 10,
     }),
   ]);
+  // Fetch pending requests for this page's exact product/location pairs, using the scoped inventory.
+  const pending = inventory.length
+    ? await db.replenishment.findMany({
+        where: {
+          status: { in: ['PROPOSED', 'APPROVED'] },
+          OR: inventory.map((i) => ({ productId: i.productId, locationId: i.locationId })),
+        },
+        include: { product: true, location: true },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      })
+    : [];
   return reply(
     `${caption(count)}\nReplenishment requests need approval and receipt before stock changes.`,
-    inventory.map((i) => ({
-      id: i.id,
-      title: i.product.name,
-      detail: `${i.location.name} · ${i.quantity} in stock · reorder point ${i.reorderPoint} · target ${i.targetStock}`,
-      actions: [
-        action('RESTOCK', i.id, 'Request replenishment', {
-          quantity: intent.quantity || Math.max(1, Math.min(1000, i.targetStock - i.quantity)),
-          reason: intent.reason || undefined,
-        }),
-      ],
-    })),
+    inventory.flatMap((i) => {
+      const existing = pending.find(
+        (p) => p.productId === i.productId && p.locationId === i.locationId,
+      );
+      return [
+        {
+          id: i.id,
+          title: i.product.name,
+          detail: `${i.location.name} · ${i.quantity} in stock · reorder point ${i.reorderPoint} · target ${i.targetStock}`,
+          actions: existing
+            ? []
+            : [
+                action('RESTOCK', i.id, 'Request replenishment', {
+                  quantity:
+                    intent.quantity || Math.max(1, Math.min(1000, i.targetStock - i.quantity)),
+                  reason: intent.reason || undefined,
+                }),
+              ],
+        },
+        ...(existing ? [replenishmentCard(existing)] : []),
+      ];
+    }),
   );
 }

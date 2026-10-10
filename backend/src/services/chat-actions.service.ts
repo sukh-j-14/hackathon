@@ -8,6 +8,11 @@ import { storeAccess, type Actor } from '../middleware/authorize.js';
 import { replyToTicket, updateTicket } from './support.service.js';
 import { createReplenishment, updateReplenishment } from './operations.service.js';
 import { updateOrderStatus, updateCart } from './shopping.service.js';
+import {
+  existingReplenishment,
+  pendingReplenishment,
+  replenishmentCard,
+} from './chat-replenishment.service.js';
 
 export const actionInput = z
   .object({
@@ -125,6 +130,8 @@ export async function prepareChatAction(actor: Actor, raw: unknown) {
       summary = `Resolve “${ticket.subject}”. The customer will see the saved replies.`;
     }
   } else if (input.kind === 'RESTOCK') {
+    const existing = await pendingReplenishment(actor, input.targetId);
+    if (existing) return existingReplenishment(existing);
     const item = await db.inventory.findUnique({
       where: { id: input.targetId },
       include: { product: true, location: true },
@@ -223,16 +230,37 @@ export async function confirmChatAction(actor: Actor, raw: unknown) {
   else if (input.kind === 'RESTOCK') {
     const item = await db.inventory.findUnique({ where: { id: input.targetId } });
     assert(item, 404, 'NOT_FOUND', 'Inventory record not found.');
-    await createReplenishment(
-      actor,
-      {
-        productId: item.productId,
-        locationId: item.locationId,
-        quantity: input.quantity,
-        reason: input.reason,
-      },
-      jti,
-    );
+    let proposal;
+    try {
+      proposal = await createReplenishment(
+        actor,
+        {
+          productId: item.productId,
+          locationId: item.locationId,
+          quantity: input.quantity,
+          reason: input.reason,
+        },
+        jti,
+      );
+    } catch (error) {
+      // Another staff member can create a request after review; surface it instead of a dead end.
+      if (!(error instanceof HttpError) || error.code !== 'ALREADY_PENDING') throw error;
+      const existing = await pendingReplenishment(actor, input.targetId);
+      if (!existing) throw error;
+      return existingReplenishment(existing);
+    }
+    return {
+      ok: true,
+      message:
+        'Replenishment requested. Review the saved request below to approve it. Stock changes only after receipt.',
+      records: [
+        replenishmentCard({
+          ...proposal,
+          product: await db.product.findUniqueOrThrow({ where: { id: proposal.productId } }),
+          location: await db.location.findUniqueOrThrow({ where: { id: proposal.locationId } }),
+        }),
+      ],
+    };
   } else
     await updateReplenishment(
       actor,
@@ -246,11 +274,24 @@ export async function confirmChatAction(actor: Actor, raw: unknown) {
       },
       input.targetId,
     );
+  if (['APPROVE_STOCK', 'RECEIVE_STOCK', 'REJECT_STOCK'].includes(input.kind)) {
+    const proposal = await db.replenishment.findUniqueOrThrow({
+      where: { id: input.targetId },
+      include: { product: true, location: true },
+    });
+    return {
+      ok: true,
+      message:
+        proposal.status === 'APPROVED'
+          ? 'Request approved. Stock stays unchanged until you confirm receipt.'
+          : proposal.status === 'RECEIVED'
+            ? 'Stock received and inventory updated.'
+            : 'Request rejected.',
+      records: [replenishmentCard(proposal)],
+    };
+  }
   return {
     ok: true,
-    message:
-      input.kind === 'RESTOCK'
-        ? 'Replenishment requested. Ask to show replenishments to approve and receive it.'
-        : 'Action completed. Ask to show the latest tickets or stock to refresh the results.',
+    message: 'Action completed. Ask to show the latest tickets or stock to refresh the results.',
   };
 }

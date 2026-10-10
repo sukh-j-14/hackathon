@@ -231,12 +231,59 @@ test(
         quantity: 4,
         reason: 'Chat test replenishment',
       });
-      await confirmChatAction(manager, { token: restock.token });
+      const competing = await prepareChatAction(admin, {
+        kind: 'RESTOCK',
+        targetId: inventory.id,
+        quantity: 9,
+        reason: 'Concurrent replenishment review',
+      });
+      const created = await confirmChatAction(manager, { token: restock.token });
+      assert(created.records?.[0].actions.some((a) => a.kind === 'APPROVE_STOCK'));
       await confirmChatAction(manager, { token: restock.token });
       assert.equal(await db.replenishment.count({ where: { productId: product.id } }), 1);
       const proposal = await db.replenishment.findFirstOrThrow({
         where: { productId: product.id },
       });
+      const duplicate = await prepareChatAction(manager, {
+        kind: 'RESTOCK',
+        targetId: inventory.id,
+        quantity: 50,
+        reason: 'Should reuse original',
+      });
+      assert.equal(duplicate.existingRequest, true);
+      assert.equal(duplicate.records?.[0].id, proposal.id);
+      assert(duplicate.records?.[0].detail.includes('4 units'));
+      assert.equal(
+        duplicate.token,
+        undefined,
+        'A duplicate request must not issue a create approval',
+      );
+      const raced = await confirmChatAction(admin, { token: competing.token });
+      assert.equal(raced.existingRequest, true);
+      assert.equal(raced.records?.[0].id, proposal.id);
+      assert.equal(await db.replenishment.count({ where: { productId: product.id } }), 1);
+      await denied(() =>
+        prepareChatAction(actor, {
+          kind: 'RESTOCK',
+          targetId: inventory.id,
+          quantity: 4,
+          reason: 'Customer denied',
+        }),
+      );
+      await denied(() =>
+        prepareChatAction(
+          { ...manager, storeIds: ['store-mumbai'] },
+          { kind: 'RESTOCK', targetId: inventory.id, quantity: 4, reason: 'Other store denied' },
+        ),
+      );
+      routed = { intent: 'LOW_STOCK', targetId: inventory.id };
+      const pendingStock = await query(manager);
+      assert.equal(pendingStock.records?.find((r) => r.id === inventory.id)?.actions.length, 0);
+      assert(
+        pendingStock.records
+          ?.find((r) => r.id === proposal.id)
+          ?.actions.some((a) => a.kind === 'APPROVE_STOCK'),
+      );
       assert.equal(
         (await db.inventory.findUniqueOrThrow({ where: { id: inventory.id } })).quantity,
         2,
@@ -245,7 +292,19 @@ test(
         kind: 'APPROVE_STOCK',
         targetId: proposal.id,
       });
-      await confirmChatAction(manager, { token: approve.token });
+      const approved = await confirmChatAction(manager, { token: approve.token });
+      assert(approved.records?.[0].actions.some((a) => a.kind === 'RECEIVE_STOCK'));
+      const approvedDuplicate = await prepareChatAction(admin, {
+        kind: 'RESTOCK',
+        targetId: inventory.id,
+        quantity: 7,
+        reason: 'Already approved request',
+      });
+      assert.equal(approvedDuplicate.records?.[0].id, proposal.id);
+      assert.deepEqual(
+        approvedDuplicate.records?.[0].actions.map((a) => a.kind),
+        ['RECEIVE_STOCK'],
+      );
       const receive = await prepareChatAction(manager, {
         kind: 'RECEIVE_STOCK',
         targetId: proposal.id,
