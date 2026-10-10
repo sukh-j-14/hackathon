@@ -162,11 +162,13 @@ export function Chatbot({
   customer,
   openAction,
   openProduct,
+  managedLocations,
 }: {
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   storeId: string;
   customer: boolean;
+  managedLocations?: string;
   openAction: (panel: ChatPanel, storeId?: string) => void;
   openProduct: (id: string, storeId?: string) => void;
 }) {
@@ -253,6 +255,7 @@ export function Chatbot({
   }
   return (
     <div className="stack chatbot">
+      {managedLocations && <small>Managing: {managedLocations}</small>}
       <div className="chat-toolbar">
         <small>Search, ask and review actions in one conversation</small>
         <button

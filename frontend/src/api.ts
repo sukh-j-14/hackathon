@@ -4,6 +4,7 @@ export type User = {
   email: string;
   role: 'CUSTOMER' | 'STORE_MANAGER' | 'ADMIN';
   tier: string;
+  managedLocations?: { id: string; name: string; city: string }[];
   preferences?: { categories?: string[]; budget?: number; storeId?: string };
 };
 export type Product = {

@@ -1411,6 +1411,12 @@ dialog:has(.chatbot) .modal-header {
   margin-bottom: 10px;
   flex-shrink: 0;
 }
+.manager-scope {
+  padding: 10px 24px;
+  background: #edf2e8;
+  color: #294739;
+  font-size: 13px;
+}
 .chat-record,
 .chat-review {
   padding: 12px;

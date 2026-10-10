@@ -307,6 +307,14 @@ export default function App() {
           )}
         </div>
       </header>
+      {user?.role === 'STORE_MANAGER' && (
+        <div className="manager-scope" role="status">
+          <strong>Store manager</strong> · Assigned locations:{' '}
+          {user.managedLocations?.length
+            ? user.managedLocations.map((s) => `${s.name}, ${s.city}`).join(' · ')
+            : 'No locations assigned. Contact an administrator.'}
+        </div>
+      )}
       <main>
         <section className="hero">
           <div className="hero-copy">
@@ -768,6 +776,12 @@ export default function App() {
             setMessages={setChatMessages}
             storeId={storeId}
             customer={Boolean(customer)}
+            managedLocations={
+              user.role === 'STORE_MANAGER'
+                ? user.managedLocations?.map((s) => `${s.name}, ${s.city}`).join(' · ') ||
+                  'No assigned locations'
+                : undefined
+            }
           />
         </Modal>
       )}

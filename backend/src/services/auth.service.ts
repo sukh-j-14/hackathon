@@ -19,6 +19,7 @@ export const publicUser = (u: {
   role: string;
   tier: string;
   preferences?: unknown;
+  assignments?: { location: { id: string; name: string; city: string } }[];
 }) => ({
   id: u.id,
   name: u.name,
@@ -26,6 +27,7 @@ export const publicUser = (u: {
   role: u.role,
   tier: u.tier,
   preferences: u.preferences,
+  managedLocations: u.role === 'STORE_MANAGER' ? (u.assignments || []).map((a) => a.location) : [],
 });
 function token(userId: string, sid: string) {
   return jwt.sign({ sid }, config.JWT_SECRET, {
@@ -64,7 +66,12 @@ export async function register(input: { email: string; name: string; password: s
   return createSession(user);
 }
 export async function login(input: { email: string; password: string }) {
-  const user = await db.user.findUnique({ where: { email: input.email } });
+  const user = await db.user.findUnique({
+    where: { email: input.email },
+    include: {
+      assignments: { include: { location: { select: { id: true, name: true, city: true } } } },
+    },
+  });
   assert(
     user && user.active && (await argon2.verify(user.passwordHash, input.password)),
     401,
@@ -77,7 +84,19 @@ export async function refresh(raw: unknown) {
   assert(typeof raw === 'string', 401, 'AUTH_REQUIRED', 'Please sign in.');
   const existing = await db.refreshToken.findUnique({
     where: { hash: hash(raw) },
-    include: { session: { include: { user: true } } },
+    include: {
+      session: {
+        include: {
+          user: {
+            include: {
+              assignments: {
+                include: { location: { select: { id: true, name: true, city: true } } },
+              },
+            },
+          },
+        },
+      },
+    },
   });
   assert(
     existing &&
@@ -128,7 +147,14 @@ export async function logout(raw: unknown) {
     await db.authSession.update({ where: { id: t.sessionId }, data: { revokedAt: new Date() } });
 }
 export async function me(id: string) {
-  return publicUser(await db.user.findUniqueOrThrow({ where: { id } }));
+  return publicUser(
+    await db.user.findUniqueOrThrow({
+      where: { id },
+      include: {
+        assignments: { include: { location: { select: { id: true, name: true, city: true } } } },
+      },
+    }),
+  );
 }
 export async function updateProfile(
   id: string,
@@ -144,5 +170,13 @@ export async function updateProfile(
       'INVALID_STORE',
       'Select an existing store.',
     );
-  return publicUser(await db.user.update({ where: { id }, data }));
+  return publicUser(
+    await db.user.update({
+      where: { id },
+      data,
+      include: {
+        assignments: { include: { location: { select: { id: true, name: true, city: true } } } },
+      },
+    }),
+  );
 }
